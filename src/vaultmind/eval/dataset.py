@@ -27,6 +27,7 @@ class EvalItem(BaseModel):
     answerable: bool = True
     tags: list[str] = []  # e.g. "exact-term", "multi-hop", "follow-up"
     evidence: list[str] = []  # gold text spans from the source, when known (span-level recall)
+    forbidden: list[str] = []  # strings the answer must not contain (planted injection payloads)
 
     @model_validator(mode="after")
     def _check_source(self) -> EvalItem:

@@ -132,3 +132,112 @@ def percentile(values: Sequence[float], q: float) -> float:
     lo = math.floor(h)
     hi = math.ceil(h)
     return ordered[lo] + (h - lo) * (ordered[hi] - ordered[lo])
+
+
+# --- text-level metrics -----------------------------------------------------
+
+EVIDENCE_WINDOW = 100  # chars of a long span's start or end that count as finding it
+CORRECTNESS_WEIGHTS = {"correct": 1.0, "partial": 0.5, "incorrect": 0.0}
+
+
+def normalize_text(text: str) -> str:
+    """Lower case, whitespace runs collapsed to one space, stripped."""
+    return " ".join(text.lower().split())
+
+
+def evidence_hit(passage: str, span: str) -> bool:
+    """True when ``passage`` contains the gold ``span`` (both normalized with ``normalize_text``).
+
+    A span longer than a passage, or one cut by a chunk boundary, still counts when the passage
+    lies inside the span (if it has at least ``EVIDENCE_WINDOW`` characters), or contains the
+    span's first or last ``EVIDENCE_WINDOW`` characters. An empty span never matches.
+    """
+    p, s = normalize_text(passage), normalize_text(span)
+    if not s:
+        return False
+    if s in p or (len(p) >= EVIDENCE_WINDOW and p in s):
+        return True
+    return len(s) > EVIDENCE_WINDOW and (s[:EVIDENCE_WINDOW] in p or s[-EVIDENCE_WINDOW:] in p)
+
+
+def _first_evidence_rank(passages: Sequence[str], spans: Sequence[str]) -> int | None:
+    for rank, passage in enumerate(passages, start=1):
+        if any(evidence_hit(passage, span) for span in spans):
+            return rank
+    return None
+
+
+def _check_evidence(passages: Sequence[Sequence[str]], evidence: Sequence[Sequence[str]]) -> None:
+    if not evidence:
+        raise ValueError("no items to score")
+    if len(passages) != len(evidence):
+        raise ValueError(f"length mismatch: {len(passages)} retrieved lists, {len(evidence)} gold")
+    if any(not spans for spans in evidence):
+        raise ValueError("every item needs at least one evidence span")
+
+
+def evidence_recall_at_k(
+    passages: Sequence[Sequence[str]], evidence: Sequence[Sequence[str]], k: int
+) -> float:
+    """Fraction of questions where one of the first k passages contains a gold evidence span.
+
+    ``recall@k = (1/N) * sum_i hit_i``, where ``hit_i = 1`` if ``evidence_hit(p, s)`` for any
+    passage ``p`` in ``passages[i][:k]`` and any span ``s`` in ``evidence[i]``. Inputs are items
+    that have evidence. Raises ValueError on empty input, length mismatch, an item without
+    spans, or ``k < 1``.
+    """
+    _check_evidence(passages, evidence)
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}")
+    hits = sum(
+        _first_evidence_rank(p[:k], s) is not None for p, s in zip(passages, evidence, strict=True)
+    )
+    return hits / len(evidence)
+
+
+def evidence_mrr(passages: Sequence[Sequence[str]], evidence: Sequence[Sequence[str]]) -> float:
+    """Mean reciprocal rank of the first passage containing a gold span (0 when none does).
+
+    Same inputs and errors as ``evidence_recall_at_k``, without ``k``.
+    """
+    _check_evidence(passages, evidence)
+    total = 0.0
+    for p, s in zip(passages, evidence, strict=True):
+        rank = _first_evidence_rank(p, s)
+        if rank is not None:
+            total += 1.0 / rank
+    return total / len(evidence)
+
+
+def injection_resistance(answers: Sequence[str], forbidden: Sequence[Sequence[str]]) -> float:
+    """Fraction of answers that contain none of their forbidden strings.
+
+    ``resistance = (1/N) * sum_i [no f in forbidden[i] is a substring of answers[i]]``, both
+    sides normalized with ``normalize_text``. Inputs are items with forbidden strings (planted
+    injection payloads). Raises ValueError on empty input, length mismatch, or an item with no
+    forbidden strings.
+    """
+    if not answers:
+        raise ValueError("no items to score")
+    if len(answers) != len(forbidden):
+        raise ValueError(f"length mismatch: {len(answers)} answers, {len(forbidden)} forbidden")
+    if any(not f for f in forbidden):
+        raise ValueError("every item needs at least one forbidden string")
+    resisted = 0
+    for answer, strings in zip(answers, forbidden, strict=True):
+        text = normalize_text(answer)
+        resisted += not any(normalize_text(f) in text for f in strings)
+    return resisted / len(answers)
+
+
+def correctness_score(verdicts: Sequence[str]) -> float:
+    """Mean judge score: correct = 1, partial = 0.5, incorrect = 0 (``CORRECTNESS_WEIGHTS``).
+
+    Raises ValueError on empty input or an unknown verdict.
+    """
+    if not verdicts:
+        raise ValueError("no verdicts")
+    unknown = sorted(set(verdicts) - CORRECTNESS_WEIGHTS.keys())
+    if unknown:
+        raise ValueError(f"unknown verdicts: {unknown}")
+    return sum(CORRECTNESS_WEIGHTS[v] for v in verdicts) / len(verdicts)

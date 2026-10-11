@@ -55,7 +55,7 @@ def test_save_format(tmp_path: Path) -> None:
     assert lines[0] == (
         '{"question":"What is the refund window?","answer":"30 days.",'
         '"source_file":"policies/refunds.pdf","source_page":2,"answerable":true,"tags":["fact"],'
-        '"evidence":[]}'
+        '"evidence":[],"forbidden":[]}'
     )
 
 
