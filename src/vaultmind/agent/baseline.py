@@ -29,7 +29,7 @@ _CITATION = re.compile(r"\[(\d+)\]")
 
 @dataclass(frozen=True)
 class Source:
-    """One numbered source shown to the LLM: a parent section, cited at its best child's page."""
+    """A numbered source shown to the LLM: a parent section, cited where its best child sits."""
 
     n: int
     file_path: Path | None
@@ -85,7 +85,7 @@ def retrieve(
                 n=len(sources) + 1,
                 file_path=record.path if record else None,
                 page=hit.chunk.page,
-                section_path=parent.section_path,
+                section_path=hit.chunk.section_path,  # a parent can span several sections
                 text=parent.text,
                 score=hit.score,
             )

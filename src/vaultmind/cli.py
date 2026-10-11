@@ -137,7 +137,7 @@ def ask(
     config_path: ConfigOption = None,
 ) -> None:
     """Answer a question from your indexed documents, with sources."""
-    from vaultmind.agent.baseline import cited_sources, stream_answer
+    from vaultmind.agent.baseline import cited_sources, is_abstention, stream_answer
     from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM
 
     cfg = load_config(config_path)
@@ -159,10 +159,14 @@ def ask(
             typer.echo(token, nl=False)
         typer.echo()
 
-    shown = cited_sources("".join(parts), sources) or sources
+    text = "".join(parts)
+    if is_abstention(text):
+        heading, shown = "Closest matches:", sources
+    else:
+        heading, shown = "Sources:", cited_sources(text, sources) or sources
     if shown:
         typer.echo()
-        typer.echo("Sources:")
+        typer.echo(heading)
         for s in shown:
             typer.echo(f"  [{s.n}] {s.label}")
 

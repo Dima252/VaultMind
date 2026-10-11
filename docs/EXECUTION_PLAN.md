@@ -24,8 +24,8 @@ The order matters. A plain baseline and the eval harness come **before** any of 
 - [x] Provider protocols (`LLM`, `Embedder`, `Reranker`) + fakes for tests
 - [x] CLI: `vaultmind config`, `vaultmind doctor`
 - [x] CI: ruff, mypy, pytest
-- [ ] Install Ollama, then `ollama pull qwen3:14b` and `ollama pull qwen3-embedding:0.6b`
-- [ ] `uv run vaultmind doctor` passes
+- [x] Install Ollama, then `ollama pull qwen3:14b` and `ollama pull qwen3-embedding:0.6b`
+- [x] `uv run vaultmind doctor` passes
 - [ ] Collect a **test corpus**: 15–30 real documents of mixed types (papers, manuals, a long report, slides exported to PDF, Markdown notes, at least one PDF with tables). The Phase 2 eval set is built from this corpus, so choose documents you know well.
 
 **Done when:** `doctor` is all green and the corpus is sitting in `vault/`.
@@ -51,7 +51,7 @@ Parallel build: contracts and stubs are fixed in `core/models.py` and the module
 
 **Done when:** you can ingest your corpus and get cited answers from the CLI, and re-running `ingest` on an unchanged folder does nothing.
 
-> Status: code complete, 174 unit tests passing. Waiting on Ollama for the live end-to-end test (`uv run pytest -m ollama`) and a run over the real corpus.
+> Status: done. 174 unit tests and 5 live Ollama tests passing; answers take about 2 s on an RTX 5070 Ti. Remaining Phase 0 item: the real test corpus.
 
 ## Phase 2: Evaluation harness
 
