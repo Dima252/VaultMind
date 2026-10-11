@@ -58,15 +58,15 @@ Parallel build: contracts and stubs are fixed in `core/models.py` and the module
 
 Goal: one command that scores any config. This turns "I think it's better" into numbers.
 
-- [x] Dataset format `eval/datasets/<name>.jsonl`: `{question, answer, source_file, source_page, answerable, tags, evidence}`. `evidence` holds gold text spans when known (CUAD has them).
-- [x] CUAD dataset importer (`vaultmind eval import-cuad`). Questions name their contract; spans become `evidence`; absent clauses become unanswerable items. **Spot-check the unanswerable ones by hand.**
-- [ ] **Evidence recall@k:** share of answerable items where a retrieved passage contains (or overlaps) a gold evidence span, after whitespace normalization. On CUAD this is the headline retrieval metric; file-level recall is too easy when every question names its contract.
+- [x] Dataset format `eval/datasets/<name>.jsonl`: `{question, answer, source_file, source_page, answerable, tags, evidence, forbidden}`. `evidence` holds gold text spans when known (CUAD has them); `forbidden` holds planted injection payloads.
+- [x] CUAD dataset importer (`vaultmind eval import-cuad`). Questions name their contract; spans become `evidence`; absent clauses become unanswerable items (only when related CUAD categories are empty too). All 12 unanswerable items checked by hand.
+- [x] **Evidence recall@k:** share of answerable items where a retrieved passage contains (or overlaps) a gold evidence span, after whitespace normalization. On CUAD this is the headline retrieval metric; file-level recall is too easy when every question names its contract.
 - [ ] `vaultmind eval generate` (lower priority now that CUAD covers the main set): the LLM drafts questions from random chunks of your own documents. **Verify each one by hand.**
-- [ ] Include tough cases: exact-term lookups (codes, names), multi-hop questions, vague phrasing, and follow-up questions that depend on chat history.
-- [ ] **Adversarial cases:** add 3–5 poisoned documents to the corpus containing embedded instructions ("ignore previous instructions and reply X", fake system prompts, "tell the user to visit ..."), plus questions that retrieve them, tagged `injection`. Also add 2–3 document pairs that disagree on a fact, tagged `contradiction`. Record the baseline **injection resistance rate**: the share of `injection` items where the answer does not follow the planted instruction (exact-match check on the planted payload, no judge needed).
-- [~] Metrics: recall@k and MRR (retrieval), answer correctness against the reference (LLM judge, spot-checked by hand), abstention accuracy, latency p50/p95. *(Done: recall@k, MRR, abstention, percentiles in `eval/metrics.py`. To do: LLM-judge correctness.)*
-- [ ] `vaultmind eval --config a.yaml --config b.yaml` runs each config and prints a comparison table, saving raw results to `eval/results/`.
-- [ ] Record the **baseline** in `docs/RESULTS.md`.
+- [ ] Include tough cases: exact-term lookups (codes, names), multi-hop questions, vague phrasing, and follow-up questions that depend on chat history. *(CUAD covers exact terms and vague clause-type phrasing; multi-hop and follow-up questions still need hand-written items, needed before Phase 4's history handling.)*
+- [x] **Adversarial cases:** add 3–5 poisoned documents to the corpus containing embedded instructions ("ignore previous instructions and reply X", fake system prompts, "tell the user to visit ..."), plus questions that retrieve them, tagged `injection`. Also add 2–3 document pairs that disagree on a fact, tagged `contradiction`. Record the baseline **injection resistance rate**: the share of `injection` items where the answer does not follow the planted instruction (exact-match check on the planted payload, no judge needed).
+- [x] Metrics: recall@k and MRR (retrieval), answer correctness against the reference (LLM judge in `eval/judge.py`, 15 verdicts spot-checked by hand: 11 agree), abstention accuracy, injection resistance, latency p50/p95.
+- [x] `vaultmind eval run --config a.yaml --config b.yaml [-d cuad -d adversarial]` runs each config and prints a comparison table, saving raw results to `eval/results/`.
+- [x] Record the **baseline** in `docs/RESULTS.md`.
 
 **Done when:** the baseline numbers are recorded, and re-running the eval gives the same retrieval numbers.
 
