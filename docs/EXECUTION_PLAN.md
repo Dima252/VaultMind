@@ -39,26 +39,28 @@ Dependencies: `pymupdf4llm`, `lancedb` (already added). No `tiktoken`: it downlo
 Parallel build: contracts and stubs are fixed in `core/models.py` and the module stubs. Four agents implement them in separate worktrees (see `scripts/agents/`), then one integration pass wires up the pipeline, the baseline, and the CLI.
 
 - [x] Shared contracts: `core/models.py` + stub signatures for every Phase 1 module
-- [ ] `core/ollama.py`: `OllamaLLM` and `OllamaEmbedder` implementing the protocols. Always pass `num_ctx` and `keep_alive`; use the `format=` JSON schema for structured output.
-- [ ] `ingest/parsers.py`: PDF → Markdown with page numbers (pymupdf4llm), plus `.md`/`.txt`. Return a list of `(text, page, section_path)` blocks.
-- [ ] `ingest/chunker.py`: heading-aware parent sections (~1200 tokens), each split into child chunks (~256 tokens, 15% overlap). Prepend `Doc title > Section` to each child before embedding.
-- [ ] `store/index.py`: LanceDB table of child chunks (vector, text, parent_id, file_id, page, section). Parent texts are stored alongside.
-- [ ] `store/registry.py`: SQLite `files` table (path, sha256, status, error, embedder model, indexed_at). Skip unchanged files, re-index modified ones, and delete chunks for files that were removed.
-- [ ] Record the embedding model name in the index, and refuse to mix models (prompt to re-index instead).
-- [ ] `agent/baseline.py`: embed query → top-k → prompt with numbered sources → answer with `[n]` citations mapped back to file + page.
-- [ ] CLI: `vaultmind ingest [PATH]`, `vaultmind ask "question"`
-- [ ] Unit tests for the chunker and registry using fakes; one `@pytest.mark.ollama` end-to-end test.
+- [x] `core/ollama.py`: `OllamaLLM` and `OllamaEmbedder` implementing the protocols. Always pass `num_ctx` and `keep_alive`; use the `format=` JSON schema for structured output.
+- [x] `ingest/parsers.py`: PDF → Markdown with page numbers (pymupdf4llm), plus `.md`/`.txt`. Return a list of `(text, page, section_path)` blocks.
+- [x] `ingest/chunker.py`: heading-aware parent sections (~1200 tokens), each split into child chunks (~256 tokens, 15% overlap). Prepend `Doc title > Section` to each child before embedding.
+- [x] `store/index.py`: LanceDB table of child chunks (vector, text, parent_id, file_id, page, section). Parent texts are stored alongside.
+- [x] `store/registry.py`: SQLite `files` table (path, sha256, status, error, embedder model, indexed_at). Skip unchanged files, re-index modified ones, and delete chunks for files that were removed.
+- [x] Record the embedding model name in the index, and refuse to mix models (prompt to re-index instead).
+- [x] `agent/baseline.py`: embed query → top-k → prompt with numbered sources → answer with `[n]` citations mapped back to file + page.
+- [x] CLI: `vaultmind ingest [PATH]`, `vaultmind ask "question"`
+- [x] Unit tests for the chunker and registry using fakes; one `@pytest.mark.ollama` end-to-end test.
 
 **Done when:** you can ingest your corpus and get cited answers from the CLI, and re-running `ingest` on an unchanged folder does nothing.
+
+> Status: code complete, 174 unit tests passing. Waiting on Ollama for the live end-to-end test (`uv run pytest -m ollama`) and a run over the real corpus.
 
 ## Phase 2: Evaluation harness
 
 Goal: one command that scores any config. This turns "I think it's better" into numbers.
 
-- [ ] Dataset format `eval/datasets/<name>.jsonl`: `{question, answer, source_file, source_page, answerable}`
+- [x] Dataset format `eval/datasets/<name>.jsonl`: `{question, answer, source_file, source_page, answerable}`
 - [ ] `vaultmind eval generate`: the LLM drafts questions from random chunks. **Verify each one by hand.** Aim for 40–60 questions, about 20% of them unanswerable (on-topic, but the answer isn't in the corpus).
 - [ ] Include tough cases: exact-term lookups (codes, names), multi-hop questions, vague phrasing, and follow-up questions that depend on chat history.
-- [ ] Metrics: recall@k and MRR (retrieval), answer correctness against the reference (LLM judge, spot-checked by hand), abstention accuracy, latency p50/p95.
+- [~] Metrics: recall@k and MRR (retrieval), answer correctness against the reference (LLM judge, spot-checked by hand), abstention accuracy, latency p50/p95. *(Done: recall@k, MRR, abstention, percentiles in `eval/metrics.py`. To do: LLM-judge correctness.)*
 - [ ] `vaultmind eval --config a.yaml --config b.yaml` runs each config and prints a comparison table, saving raw results to `eval/results/`.
 - [ ] Record the **baseline** in `docs/RESULTS.md`.
 

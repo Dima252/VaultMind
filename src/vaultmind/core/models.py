@@ -55,7 +55,7 @@ class ChildChunk:
     parent_id: str
     file_id: str
     text: str  # raw chunk text, shown in citations
-    embed_text: str  # "Title > Section > Sub\n\n" + text, what gets embedded and indexed
+    embed_text: str  # "Title > Section > Sub\n\n" + text (title not repeated), what gets embedded
     page: int | None
     section_path: tuple[str, ...]
 

@@ -86,6 +86,13 @@ uv sync
 uv run vaultmind doctor     # checks Ollama and the models
 ```
 
+Put your documents in `vault/` (PDF, Markdown, or text), then:
+
+```bash
+uv run vaultmind ingest                      # index new/changed files, forget deleted ones
+uv run vaultmind ask "What does the contract say about termination?"
+```
+
 <!-- TODO(Phase 5): `uv run vaultmind ui` -->
 
 ## Configuration

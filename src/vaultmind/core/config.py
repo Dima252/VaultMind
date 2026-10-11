@@ -34,6 +34,7 @@ class ModelsConfig(_Section):
     embedder: str = "qwen3-embedding:0.6b"
     reranker: str = "BAAI/bge-reranker-v2-m3"
     num_ctx: int = Field(default=16384, gt=0)
+    think: bool = False
 
 
 class ChunkingConfig(_Section):

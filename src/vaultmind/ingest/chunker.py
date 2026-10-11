@@ -57,12 +57,21 @@ def chunk_document(
                     parent_id=parent.id,
                     file_id=file_id,
                     text=chunk_text,
-                    embed_text=" > ".join((doc.title, *origin.section_path)) + "\n\n" + chunk_text,
+                    embed_text=_context_header(doc.title, origin.section_path)
+                    + "\n\n"
+                    + chunk_text,
                     page=origin.page,
                     section_path=origin.section_path,
                 )
             )
     return parents, children
+
+
+def _context_header(title: str, section_path: tuple[str, ...]) -> str:
+    """Build "Title > Section > Sub", not repeating the title when it is also the first heading."""
+    if section_path and section_path[0] == title:
+        section_path = section_path[1:]
+    return " > ".join((title, *section_path))
 
 
 # --- parents -------------------------------------------------------------------------

@@ -103,6 +103,7 @@ def test_generate_sends_num_ctx_and_keep_alive_without_schema_options() -> None:
     assert call["keep_alive"] == "5m"
     assert "format" not in call
     assert "temperature" not in call["options"]
+    assert call["think"] is False
 
 
 def test_generate_with_schema_sets_format_temperature_and_disables_thinking() -> None:
@@ -114,6 +115,15 @@ def test_generate_with_schema_sets_format_temperature_and_disables_thinking() ->
     assert call["options"] == {"num_ctx": 8192, "temperature": 0}
     assert call["keep_alive"] == "5m"
     assert call["think"] is False
+
+
+def test_think_flag_reaches_free_form_calls_but_never_schema_calls() -> None:
+    client = FakeClient(content="{}")
+    llm = OllamaLLM("m", host=HOST, num_ctx=8192, keep_alive="5m", think=True, client=client)
+    llm.generate(MESSAGES)
+    llm.generate(MESSAGES, schema={"type": "object"})
+    list(llm.stream(MESSAGES))
+    assert [c["think"] for c in client.chat_calls] == [True, False, True]
 
 
 def test_generate_drops_inline_thinking() -> None:
@@ -128,6 +138,7 @@ def test_stream_skips_empty_deltas_and_sends_options() -> None:
     assert call["stream"] is True
     assert call["options"] == {"num_ctx": 8192}
     assert call["keep_alive"] == "5m"
+    assert call["think"] is False
 
 
 def test_stream_drops_thinking_split_across_deltas() -> None:

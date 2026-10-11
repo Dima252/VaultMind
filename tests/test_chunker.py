@@ -213,3 +213,19 @@ def test_children_prefer_sentence_boundaries() -> None:
     _, children = chunk_document(_layout_doc(), FILE_ID, cfg)
     assert all(c.text.endswith(".") for c in children)
     assert all(c.text.startswith("[p") for c in children)
+
+
+def test_title_not_repeated_when_first_heading_is_title() -> None:
+    doc = ParsedDocument(
+        path=Path("guide.md"),
+        title="Guide",
+        blocks=[
+            Block(
+                text="# Guide\n\n## Setup\n\nInstall it.",
+                page=None,
+                section_path=("Guide", "Setup"),
+            )
+        ],
+    )
+    _, children = chunk_document(doc, FILE_ID, ChunkingConfig())
+    assert children[0].embed_text.startswith("Guide > Setup\n\n")

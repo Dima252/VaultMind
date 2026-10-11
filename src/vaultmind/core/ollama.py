@@ -92,12 +92,14 @@ class OllamaLLM:
         host: str,
         num_ctx: int,
         keep_alive: str,
+        think: bool = False,
         client: Any | None = None,
     ) -> None:
         self.model_name = model
         self.host = host
         self.num_ctx = num_ctx
         self.keep_alive = keep_alive
+        self.think = think
         self._client = client if client is not None else ollama.Client(host=host)
 
     @classmethod
@@ -107,11 +109,12 @@ class OllamaLLM:
             host=cfg.ollama.host,
             num_ctx=cfg.models.num_ctx,
             keep_alive=cfg.ollama.keep_alive,
+            think=cfg.models.think,
         )
 
     def generate(self, messages: Sequence[Message], *, schema: dict[str, Any] | None = None) -> str:
         options: dict[str, Any] = {"num_ctx": self.num_ctx}
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"think": self.think}
         if schema is not None:
             options["temperature"] = 0
             kwargs["format"] = schema
@@ -135,6 +138,7 @@ class OllamaLLM:
                 stream=True,
                 options={"num_ctx": self.num_ctx},
                 keep_alive=self.keep_alive,
+                think=self.think,
             )
             for delta in _strip_thinking(_content(c) for c in chunks):
                 if delta:

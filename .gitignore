@@ -25,6 +25,9 @@ eval/results/
 config/local.yaml
 .env
 
+# Claude Code agent worktrees
+.claude/worktrees/
+
 # OS / editor
 .DS_Store
 Thumbs.db

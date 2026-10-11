@@ -2,17 +2,64 @@
 
 from __future__ import annotations
 
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 import yaml
 
-from vaultmind.core.config import load_config, resolve_config_path
+from vaultmind.core.config import Config, load_config, resolve_config_path
+
+if TYPE_CHECKING:
+    from vaultmind.store.index import ChunkIndex
+    from vaultmind.store.registry import Registry
 
 app = typer.Typer(help="VaultMind: local, private agentic RAG over your documents.")
 
 ConfigOption = Annotated[Path | None, typer.Option("--config", "-c", help="Path to a YAML config.")]
+
+
+@app.callback()
+def _main() -> None:
+    # Legacy Windows code pages can't encode every character a document or model may produce.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
+
+
+@contextmanager
+def _store(cfg: Config) -> Iterator[tuple[ChunkIndex, Registry]]:
+    """Open the index and registry under `paths.data_dir`, with friendly errors."""
+    from vaultmind.store.index import ChunkIndex, EmbedderMismatchError
+    from vaultmind.store.registry import Registry
+
+    try:
+        index = ChunkIndex(cfg.paths.data_dir / "index", embedder_name=cfg.models.embedder)
+    except EmbedderMismatchError as exc:
+        typer.secho(f"[FAIL] {exc}", fg="red")
+        raise typer.Exit(1) from exc
+    registry = Registry(cfg.paths.data_dir / "vaultmind.sqlite")
+    try:
+        yield index, registry
+    finally:
+        registry.close()
+        index.close()
+
+
+@contextmanager
+def _ollama_errors() -> Iterator[None]:
+    from vaultmind.core.ollama import OllamaUnavailableError
+
+    try:
+        yield
+    except OllamaUnavailableError as exc:
+        typer.echo()
+        typer.secho(f"[FAIL] {exc}", fg="red")
+        raise typer.Exit(1) from exc
 
 
 @app.command()
@@ -45,6 +92,79 @@ def doctor(config_path: ConfigOption = None) -> None:
             typer.secho(f"[ OK ] {name}", fg="green")
     if missing:
         raise typer.Exit(1)
+
+
+@app.command()
+def ingest(
+    path: Annotated[
+        Path | None, typer.Argument(help="File or folder. Defaults to paths.vault_dir.")
+    ] = None,
+    config_path: ConfigOption = None,
+) -> None:
+    """Index new and changed documents; forget deleted ones."""
+    from vaultmind.core.ollama import OllamaEmbedder
+    from vaultmind.ingest.pipeline import ingest_path
+
+    cfg = load_config(config_path)
+    target = path or cfg.paths.vault_dir
+    if not target.exists():
+        typer.secho(f"[FAIL] {target} does not exist. Create it and add documents.", fg="red")
+        raise typer.Exit(1)
+
+    with _store(cfg) as (index, registry), _ollama_errors():
+        summary = ingest_path(
+            target,
+            cfg,
+            embedder=OllamaEmbedder.from_config(cfg),
+            index=index,
+            registry=registry,
+            on_file=lambda f: typer.echo(f"  indexing {f.name}"),
+        )
+        chunks = index.count()
+
+    for file, reason in summary.failed:
+        typer.secho(f"[FAIL] {file.name}: {reason}", fg="red")
+    typer.echo(
+        f"added {len(summary.added)}, updated {len(summary.updated)}, "
+        f"skipped {len(summary.skipped)}, failed {len(summary.failed)}, "
+        f"removed {len(summary.removed)} | {chunks} chunks in the index"
+    )
+
+
+@app.command()
+def ask(
+    question: Annotated[str, typer.Argument(help="Your question.")],
+    config_path: ConfigOption = None,
+) -> None:
+    """Answer a question from your indexed documents, with sources."""
+    from vaultmind.agent.baseline import cited_sources, stream_answer
+    from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM
+
+    cfg = load_config(config_path)
+    with _store(cfg) as (index, registry), _ollama_errors():
+        if index.count() == 0:
+            typer.secho("[FAIL] The index is empty. Run: vaultmind ingest", fg="red")
+            raise typer.Exit(1)
+        sources, tokens = stream_answer(
+            question,
+            cfg,
+            llm=OllamaLLM.from_config(cfg),
+            embedder=OllamaEmbedder.from_config(cfg),
+            index=index,
+            registry=registry,
+        )
+        parts: list[str] = []
+        for token in tokens:
+            parts.append(token)
+            typer.echo(token, nl=False)
+        typer.echo()
+
+    shown = cited_sources("".join(parts), sources) or sources
+    if shown:
+        typer.echo()
+        typer.echo("Sources:")
+        for s in shown:
+            typer.echo(f"  [{s.n}] {s.label}")
 
 
 if __name__ == "__main__":

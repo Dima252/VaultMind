@@ -189,6 +189,9 @@ class ChunkIndex:
         rows = self._parents.search().where(where).limit(None).to_arrow().to_pylist()
         return {r["id"]: _parent_from_row(r) for r in rows}
 
+    def close(self) -> None:
+        """Release the index. A no-op today (LanceDB holds no open handles); mirrors Registry."""
+
     def count(self) -> int:
         """Number of child chunks in the index."""
         return 0 if self._children is None else int(self._children.count_rows())
