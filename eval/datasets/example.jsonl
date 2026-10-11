@@ -1,0 +1,5 @@
+{"question":"How many vacation days do full-time employees get per year?","answer":"Full-time employees get 20 paid vacation days per year.","source_file":"handbook/employee-handbook.pdf","source_page":4,"answerable":true,"tags":["fact"]}
+{"question":"What does the error code E-1042 mean?","answer":"E-1042 means the device firmware is out of date.","source_file":"manuals/router-manual.pdf","source_page":17,"answerable":true,"tags":["exact-term"]}
+{"question":"Which section of the lease covers early termination, and what notice does it require?","answer":"Section 9 covers early termination and requires 60 days' written notice.","source_file":"lease-agreement.pdf","source_page":null,"answerable":true,"tags":["multi-hop"]}
+{"question":"And what is the fee for doing that?","answer":"Early termination costs one month's rent.","source_file":"lease-agreement.pdf","source_page":6,"answerable":true,"tags":["follow-up"]}
+{"question":"What was the company's revenue in 2031?","answer":"","source_file":null,"source_page":null,"answerable":false,"tags":["unanswerable"]}
