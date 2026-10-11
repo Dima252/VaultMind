@@ -222,5 +222,113 @@ def import_cuad(
     typer.echo("Next: review the questions, then run: vaultmind ingest")
 
 
+@eval_app.command("install-adversarial")
+def install_adversarial(config_path: ConfigOption = None) -> None:
+    """Copy the synthetic adversarial documents into <vault>/adversarial/."""
+    from vaultmind.eval.adversarial import SUBDIR
+    from vaultmind.eval.adversarial import install_adversarial as run_install
+
+    cfg = load_config(config_path)
+    try:
+        written = run_install(cfg.paths.vault_dir)
+    except FileNotFoundError as exc:
+        typer.secho(f"[FAIL] {exc}", fg="red")
+        raise typer.Exit(1) from exc
+    typer.echo(f"{len(written)} documents in {cfg.paths.vault_dir / SUBDIR}")
+    typer.echo("Next: vaultmind ingest")
+
+
+def _dataset_path(name: str) -> Path:
+    """A dataset name (``cuad``) or a path to a JSONL file."""
+    return Path(name) if name.endswith(".jsonl") else Path("eval/datasets") / f"{name}.jsonl"
+
+
+@eval_app.command("run")
+def eval_run(
+    config_paths: Annotated[
+        list[Path] | None,
+        typer.Option("--config", "-c", help="Config to score; repeat to compare several."),
+    ] = None,
+    datasets: Annotated[
+        list[str] | None,
+        typer.Option("--dataset", "-d", help="Dataset name or .jsonl path; repeatable."),
+    ] = None,
+    judge: Annotated[
+        bool, typer.Option("--judge/--no-judge", help="Grade answers with the LLM judge.")
+    ] = True,
+    limit: Annotated[
+        int | None, typer.Option(min=1, help="Only the first N items (quick runs).")
+    ] = None,
+    out_dir: Annotated[Path, typer.Option(help="Where raw results go.")] = Path("eval/results"),
+) -> None:
+    """Score configs on eval datasets and print a comparison table.
+
+    The judge always uses the first config's LLM, so every config gets the same judge.
+    """
+    from datetime import datetime
+
+    from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM
+    from vaultmind.eval.dataset import load_dataset
+    from vaultmind.eval.runner import (
+        ItemResult,
+        RunReport,
+        check_compatible,
+        format_table,
+        run_config,
+        save_report,
+    )
+
+    paths: list[Path | None] = list(config_paths) if config_paths else [None]
+    configs = {(path.stem if path else "default"): load_config(path) for path in paths}
+    if len(configs) != len(paths):
+        typer.secho("[FAIL] Config file names must be unique (they name the columns).", fg="red")
+        raise typer.Exit(1)
+    try:
+        check_compatible(configs)
+        loaded = {name: load_dataset(_dataset_path(name)) for name in (datasets or ["cuad"])}
+    except (ValueError, OSError) as exc:
+        typer.secho(f"[FAIL] {exc}", fg="red")
+        raise typer.Exit(1) from exc
+
+    run_dir = out_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+    judge_llm = OllamaLLM.from_config(next(iter(configs.values()))) if judge else None
+    reports: list[RunReport] = []
+    for config_name, cfg in configs.items():
+        with _store(cfg) as (index, registry), _ollama_errors():
+            if index.count() == 0:
+                typer.secho(
+                    f"[FAIL] {config_name}: the index is empty. Run: vaultmind ingest", fg="red"
+                )
+                raise typer.Exit(1)
+            llm, embedder = OllamaLLM.from_config(cfg), OllamaEmbedder.from_config(cfg)
+            for dataset_name, items in loaded.items():
+                items = items[:limit] if limit else items
+                typer.echo(f"{config_name} / {dataset_name}: {len(items)} items")
+
+                def progress(result: ItemResult, total: int = len(items)) -> None:
+                    mark = "abstained" if result.abstained else (result.verdict or "answered")
+                    typer.echo(f"  [{result.index + 1}/{total}] {mark}")
+
+                report = run_config(
+                    cfg,
+                    items,
+                    config_name=config_name,
+                    dataset_name=dataset_name,
+                    llm=llm,
+                    embedder=embedder,
+                    index=index,
+                    registry=registry,
+                    judge_llm=judge_llm,
+                    on_item=progress,
+                )
+                save_report(report, run_dir)
+                reports.append(report)
+
+    typer.echo()
+    typer.echo(format_table(reports))
+    typer.echo()
+    typer.echo(f"Raw results: {run_dir}")
+
+
 if __name__ == "__main__":
     app()
