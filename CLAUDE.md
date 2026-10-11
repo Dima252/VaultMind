@@ -2,8 +2,10 @@
 
 VaultMind is a fully local, privacy-first agentic RAG desktop app. The product idea (offline, private, corrective RAG over the user's documents) is fixed. Implementation choices may be challenged if there's a measured reason.
 
+- **Start here:** [docs/STATUS.md](docs/STATUS.md) covers what's done, what's next, known limitations and environment gotchas. Update it when you finish a chunk of work.
 - Roadmap and current phase: [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md). Tick its checkboxes when a task lands.
 - Eval numbers: `docs/RESULTS.md` (created in Phase 2).
+- Dev machine is Windows (console cp1255): keep CLI output ASCII. If `ollama` isn't on PATH, it's at `%LOCALAPPDATA%\Programs\Ollama\ollama.exe`.
 
 ## Commands
 

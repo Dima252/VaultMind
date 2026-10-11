@@ -15,7 +15,8 @@ htmlcov/
 
 # Local data - never commit user documents or indexes
 data/
-vault/
+vault/*
+!vault/README.md
 *.lance/
 *.sqlite
 *.sqlite3
