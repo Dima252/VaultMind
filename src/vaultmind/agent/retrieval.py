@@ -38,6 +38,22 @@ def rerank(query: str, hits: Sequence[SearchHit], reranker: Reranker) -> list[Se
     return sorted(rescored, key=lambda h: h.score, reverse=True)
 
 
+def candidates(
+    query: str, cfg: Config, *, embedder: Embedder, index: ChunkIndex
+) -> list[SearchHit]:
+    """Unreranked hits for one query, best first: vector, or vector + BM25 fused with RRF.
+
+    Returns `candidates` hits when hybrid search or reranking is on, else `top_k`.
+    """
+    r = cfg.retrieval
+    n = r.candidates if (r.hybrid or r.rerank) else r.top_k
+    [vector] = embedder.embed([query])
+    hits = index.vector_search(vector, k=n)
+    if r.hybrid:
+        hits = rrf_fuse([hits, index.fts_search(query, k=n)])[:n]
+    return hits
+
+
 def search(
     query: str,
     cfg: Config,
@@ -48,19 +64,14 @@ def search(
 ) -> list[SearchHit]:
     """Up to `top_k` child hits, best first.
 
-    With reranking on, `candidates` hits are reranked and those scoring below
+    With reranking on, the candidates are reranked and those scoring below
     `rerank_threshold` are dropped, so the result can be empty. Without reranking or hybrid
     search, this is plain top-k vector search.
     """
     r = cfg.retrieval
     if r.rerank and reranker is None:
         raise ValueError("retrieval.rerank is on but no reranker was given")
-    n = r.candidates if (r.hybrid or r.rerank) else r.top_k
-
-    [vector] = embedder.embed([query])
-    hits = index.vector_search(vector, k=n)
-    if r.hybrid:
-        hits = rrf_fuse([hits, index.fts_search(query, k=n)])[:n]
+    hits = candidates(query, cfg, embedder=embedder, index=index)
     if r.rerank and reranker is not None:
         hits = [h for h in rerank(query, hits, reranker) if h.score >= r.rerank_threshold]
     return hits[: r.top_k]

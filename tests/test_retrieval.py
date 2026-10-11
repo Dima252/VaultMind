@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from vaultmind.agent.baseline import retrieve
-from vaultmind.agent.retrieval import RRF_K, rerank, rrf_fuse, search
+from vaultmind.agent.retrieval import RRF_K, candidates, rerank, rrf_fuse, search
 from vaultmind.core.config import Config, RetrievalConfig
 from vaultmind.core.models import ChildChunk, FileRecord, ParentSection, SearchHit
 from vaultmind.store.index import ChunkIndex
@@ -131,3 +131,28 @@ def test_small_to_big_off_sends_child_text(store: tuple[ChunkIndex, Registry]) -
     assert [s.n for s in small] == [1, 2, 3, 4]
     assert small[0].text == CHILDREN[1].text
     assert small[0].label == "contract.txt, p. 1, Terms"
+
+
+def test_candidates_are_unreranked_and_sized_by_config(
+    store: tuple[ChunkIndex, Registry],
+) -> None:
+    index, _ = store
+    embedder = FakeEmbedder()
+    many = candidates(
+        "law", _cfg(hybrid=True, rerank=True, candidates=3, top_k=1), embedder=embedder, index=index
+    )
+    few = candidates(
+        "law", _cfg(hybrid=False, rerank=False, top_k=2), embedder=embedder, index=index
+    )
+    assert len(many) == 3
+    assert len(few) == 2
+
+
+def test_sources_carry_their_chunk_id(store: tuple[ChunkIndex, Registry]) -> None:
+    index, registry = store
+    cfg = _cfg(hybrid=False, rerank=False)
+    sources = retrieve(
+        CHILDREN[1].embed_text, cfg, embedder=FakeEmbedder(), index=index, registry=registry
+    )
+    assert sources[0].chunk_id == CHILDREN[1].id
+    assert sources[0].warnings == ()

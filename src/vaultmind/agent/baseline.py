@@ -39,6 +39,8 @@ class Source:
     section_path: tuple[str, ...]
     text: str
     score: float
+    chunk_id: str | None = None  # the child chunk the citation points at (for highlighting)
+    warnings: tuple[str, ...] = ()  # e.g. instruction-like text found by the injection guard
 
     @property
     def label(self) -> str:
@@ -80,6 +82,13 @@ def retrieve(
     its best child); without it, each child chunk is its own source.
     """
     hits = search(question, cfg, embedder=embedder, index=index, reranker=reranker)
+    return to_sources(hits, cfg, index=index, registry=registry)
+
+
+def to_sources(
+    hits: Sequence[SearchHit], cfg: Config, *, index: ChunkIndex, registry: Registry
+) -> list[Source]:
+    """Number hits (best first) as sources: child chunks, or parents with `small_to_big`."""
     if not cfg.retrieval.small_to_big:
         return [_source(i + 1, hit, hit.chunk.text, registry) for i, hit in enumerate(hits)]
 
@@ -105,6 +114,7 @@ def _source(n: int, hit: SearchHit, text: str, registry: Registry) -> Source:
         section_path=hit.chunk.section_path,  # a parent can span several sections
         text=text,
         score=hit.score,
+        chunk_id=hit.chunk.id,
     )
 
 

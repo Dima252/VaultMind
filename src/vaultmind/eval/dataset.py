@@ -5,8 +5,18 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+
+
+class Turn(BaseModel):
+    """One earlier chat message, for follow-up questions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str
 
 
 class EvalItem(BaseModel):
@@ -28,6 +38,7 @@ class EvalItem(BaseModel):
     tags: list[str] = []  # e.g. "exact-term", "multi-hop", "follow-up"
     evidence: list[str] = []  # gold text spans from the source, when known (span-level recall)
     forbidden: list[str] = []  # strings the answer must not contain (planted injection payloads)
+    history: list[Turn] = []  # earlier chat turns, oldest first; the question follows them
 
     @model_validator(mode="after")
     def _check_source(self) -> EvalItem:
@@ -78,7 +89,12 @@ def save_dataset(items: Sequence[EvalItem], path: Path) -> None:
     """Write one compact JSON object per line (UTF-8, non-ASCII kept as is, trailing newline)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        json.dumps(item.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))
+        json.dumps(
+            # `history` only when present, so single-turn datasets keep their existing lines
+            item.model_dump(mode="json", exclude=set() if item.history else {"history"}),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         for item in items
     ]
     content = "".join(line + "\n" for line in lines)

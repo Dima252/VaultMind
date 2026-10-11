@@ -21,6 +21,8 @@ vault/*
 *.sqlite
 *.sqlite3
 eval/results/
+# Questions over your own documents quote them: keep them local
+eval/datasets/personal*.jsonl
 eval/corpora/
 
 # Local config overrides

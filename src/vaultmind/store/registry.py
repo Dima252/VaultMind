@@ -24,6 +24,24 @@ _MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX files_path ON files (path);
     """,
+    2: """
+    CREATE TABLE runs (
+        id         TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        question   TEXT NOT NULL,
+        answer     TEXT NOT NULL,
+        abstained  INTEGER NOT NULL
+    );
+    CREATE INDEX runs_created ON runs (created_at);
+    CREATE TABLE trace_events (
+        run_id      TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+        seq         INTEGER NOT NULL,
+        node        TEXT NOT NULL,
+        duration_ms REAL NOT NULL,
+        data        TEXT NOT NULL,
+        PRIMARY KEY (run_id, seq)
+    );
+    """,
 }
 SCHEMA_VERSION = max(_MIGRATIONS)
 
@@ -52,6 +70,21 @@ def _from_row(row: sqlite3.Row) -> FileRecord:
     )
 
 
+def migrate(conn: sqlite3.Connection) -> None:
+    """Bring the app database to SCHEMA_VERSION. Every store on `vaultmind.sqlite` calls this."""
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"registry schema version {version} is newer than this app supports "
+            f"({SCHEMA_VERSION}); upgrade VaultMind"
+        )
+    for target in range(version + 1, SCHEMA_VERSION + 1):
+        # executescript commits any open transaction first, so wrap the step explicitly.
+        conn.executescript(
+            f"BEGIN;\n{_MIGRATIONS[target]}\nPRAGMA user_version = {target};\nCOMMIT;"
+        )
+
+
 class Registry:
     def __init__(self, db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,24 +96,10 @@ class Registry:
         try:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
-            self._migrate(self._conn)
+            migrate(self._conn)
         except BaseException:
             self.close()
             raise
-
-    @staticmethod
-    def _migrate(conn: sqlite3.Connection) -> None:
-        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        if version > SCHEMA_VERSION:
-            raise RuntimeError(
-                f"registry schema version {version} is newer than this app supports "
-                f"({SCHEMA_VERSION}); upgrade VaultMind"
-            )
-        for target in range(version + 1, SCHEMA_VERSION + 1):
-            # executescript commits any open transaction first, so wrap the step explicitly.
-            conn.executescript(
-                f"BEGIN;\n{_MIGRATIONS[target]}\nPRAGMA user_version = {target};\nCOMMIT;"
-            )
 
     def _db(self) -> sqlite3.Connection:
         if self._conn is None:

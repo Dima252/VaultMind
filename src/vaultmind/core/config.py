@@ -53,8 +53,12 @@ class RetrievalConfig(_Section):
 
 
 class AgentConfig(_Section):
+    loop: bool = True
+    query_variants: int = Field(default=2, ge=0)
     rewrite: bool = True
     max_rewrites: int = Field(default=2, ge=0)
+    injection_guard: bool = True
+    detect_contradictions: bool = False
     groundedness_check: bool = False
 
 

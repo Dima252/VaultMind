@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from vaultmind.eval.dataset import EvalItem, load_dataset, save_dataset
+from vaultmind.eval.dataset import EvalItem, Turn, load_dataset, save_dataset
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "eval" / "datasets" / "example.jsonl"
 
@@ -162,3 +162,28 @@ def test_unknown_key_rejected() -> None:
         EvalItem.model_validate(
             {"question": "q", "answer": "a", "source_file": "a.pdf", "source_page": 1, "tag": []}
         )
+
+
+def test_history_round_trip(tmp_path: Path) -> None:
+    item = EvalItem(
+        question="And what about the second one?",
+        answer="Kruskal",
+        source_file="notes.md",
+        source_page=None,
+        tags=["follow-up"],
+        history=[
+            Turn(role="user", content="Name two MST algorithms."),
+            Turn(role="assistant", content="Prim and Kruskal."),
+        ],
+    )
+    path = tmp_path / "d.jsonl"
+    save_dataset([item, _items()[0]], path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert '"history":[{"role":"user"' in lines[0]
+    assert "history" not in lines[1]  # omitted when empty
+    assert load_dataset(path) == [item, _items()[0]]
+
+
+def test_history_rejects_unknown_role() -> None:
+    with pytest.raises(ValidationError):
+        Turn.model_validate({"role": "system", "content": "x"})
