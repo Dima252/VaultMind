@@ -1,0 +1,3 @@
+# Loop with the prompt-injection guard off.
+agent:
+  injection_guard: false

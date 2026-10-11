@@ -1,0 +1,3 @@
+# Phase 3 default: linear pipeline (no analyze, no rewrite loop).
+agent:
+  loop: false

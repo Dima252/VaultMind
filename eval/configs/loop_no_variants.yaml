@@ -1,0 +1,3 @@
+# Loop without query variants (analyze skipped when there is no chat history).
+agent:
+  query_variants: 0

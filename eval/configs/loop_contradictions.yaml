@@ -1,0 +1,3 @@
+# Loop + contradiction check (one extra LLM call when sources span 2+ files).
+agent:
+  detect_contradictions: true

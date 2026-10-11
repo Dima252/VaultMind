@@ -1,0 +1,3 @@
+# Loop + groundedness check (one extra LLM call per answer).
+agent:
+  groundedness_check: true

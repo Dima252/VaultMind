@@ -3,3 +3,5 @@ retrieval:
   hybrid: false
   rerank: false
   small_to_big: true
+agent:
+  loop: false   # linear pipeline, as measured in Phase 3

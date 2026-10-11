@@ -4,3 +4,5 @@ retrieval:
   rerank: true
   rerank_threshold: 0.0
   small_to_big: true
+agent:
+  loop: false   # linear pipeline, as measured in Phase 3

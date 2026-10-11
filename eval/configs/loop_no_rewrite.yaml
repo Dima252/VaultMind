@@ -1,0 +1,3 @@
+# Loop with the rewrite step off.
+agent:
+  rewrite: false
