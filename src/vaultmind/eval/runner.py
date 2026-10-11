@@ -7,10 +7,12 @@ import json
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from vaultmind.agent.baseline import NOT_FOUND, Source, build_messages, is_abstention, retrieve
+from vaultmind.agent.graph import run_agent
+from vaultmind.agent.types import AgentResult
 from vaultmind.core.config import Config
 from vaultmind.core.providers import LLM, Embedder, Reranker
 from vaultmind.eval.dataset import EvalItem
@@ -45,6 +47,9 @@ METRIC_NAMES: tuple[str, ...] = (
     "generation_p95_ms",
     "total_p50_ms",
     "total_p95_ms",
+    "rewrite_rate",
+    "rewrite_recovered",
+    "analyze_p50_ms",
 )
 
 
@@ -65,6 +70,9 @@ class ItemResult:
     retrieved: list[RetrievedSource]  # in rank order
     answer: str
     abstained: bool
+    # Linear runs time the two stages directly. Agent runs (`agent.loop`) count the generate
+    # and direct nodes as generation and everything else (analyze, rewrite, checks, graph
+    # overhead) as retrieval, so retrieval_ms + generation_ms is the item's wall time.
     retrieval_ms: float
     generation_ms: float  # 0 when nothing was retrieved and no LLM call was made
     # Judge verdict (a Verdict value). With the judge on: "incorrect" for an abstention on an
@@ -72,6 +80,10 @@ class ItemResult:
     # With the judge off: always None.
     verdict: str | None
     judge_reason: str | None  # the judge's reason, or "judge error: ..."; None if not judged
+    # Agent runs only (empty / 0 for linear runs and result files written before Phase 4):
+    queries: list[str] = field(default_factory=list)  # every query searched, in order
+    rewrites: int = 0  # rewrite rounds used
+    node_ms: dict[str, float] = field(default_factory=dict)  # total time per graph node
 
 
 @dataclass(frozen=True)
@@ -119,6 +131,80 @@ def _grade(
     return result.verdict.value, result.reason
 
 
+def _linear_item(
+    i: int,
+    item: EvalItem,
+    cfg: Config,
+    llm: LLM,
+    embedder: Embedder,
+    index: ChunkIndex,
+    registry: Registry,
+    reranker: Reranker | None,
+    vault_dir: Path,
+    judge_llm: LLM | None,
+) -> ItemResult:
+    start = time.perf_counter()
+    sources = retrieve(
+        item.question, cfg, embedder=embedder, index=index, registry=registry, reranker=reranker
+    )
+    retrieval_ms = _elapsed_ms(start)
+
+    if sources:
+        start = time.perf_counter()
+        answer = llm.generate(build_messages(item.question, sources)).strip()
+        generation_ms = _elapsed_ms(start)
+    else:
+        answer, generation_ms = NOT_FOUND, 0.0
+
+    abstained = is_abstention(answer)
+    verdict, reason = _grade(item, answer, abstained, judge_llm)
+    return ItemResult(
+        index=i,
+        question=item.question,
+        answerable=item.answerable,
+        tags=list(item.tags),
+        retrieved=_to_retrieved(sources, vault_dir),
+        answer=answer,
+        abstained=abstained,
+        retrieval_ms=retrieval_ms,
+        generation_ms=generation_ms,
+        verdict=verdict,
+        judge_reason=reason,
+    )
+
+
+def _agent_item(
+    i: int,
+    item: EvalItem,
+    result: AgentResult,
+    total_ms: float,
+    vault_dir: Path,
+    judge_llm: LLM | None,
+) -> ItemResult:
+    answer = result.answer.strip()
+    generation_ms = result.node_ms("generate") + result.node_ms("direct")
+    node_ms: dict[str, float] = {}
+    for event in result.trace:
+        node_ms[event.node] = node_ms.get(event.node, 0.0) + event.duration_ms
+    verdict, reason = _grade(item, answer, result.abstained, judge_llm)
+    return ItemResult(
+        index=i,
+        question=item.question,
+        answerable=item.answerable,
+        tags=list(item.tags),
+        retrieved=_to_retrieved(result.sources, vault_dir),
+        answer=answer,
+        abstained=result.abstained,
+        retrieval_ms=max(total_ms - generation_ms, 0.0),
+        generation_ms=generation_ms,
+        verdict=verdict,
+        judge_reason=reason,
+        queries=list(result.queries),
+        rewrites=result.rewrites,
+        node_ms=node_ms,
+    )
+
+
 def run_config(
     cfg: Config,
     items: Sequence[EvalItem],
@@ -133,42 +219,34 @@ def run_config(
     judge_llm: LLM | None = None,
     on_item: Callable[[ItemResult], None] | None = None,
 ) -> RunReport:
-    """Answer every item with the linear pipeline (`agent.baseline`) and score the run.
+    """Answer every item and score the run.
 
-    Retrieval and generation are timed separately. With ``judge_llm`` None, correctness is
-    not measured: every verdict is None and the ``correctness`` metric is None.
+    With ``agent.loop`` on, each item goes through the corrective agent (`agent.graph`) with
+    its chat history; otherwise through the linear pipeline (`agent.baseline`), which ignores
+    history. Timing is split as documented on ItemResult. With ``judge_llm`` None, correctness
+    is not measured: every verdict is None and the ``correctness`` metric is None.
     """
     vault_dir = cfg.paths.vault_dir.resolve()
     results: list[ItemResult] = []
     for i, item in enumerate(items):
-        start = time.perf_counter()
-        sources = retrieve(
-            item.question, cfg, embedder=embedder, index=index, registry=registry, reranker=reranker
-        )
-        retrieval_ms = _elapsed_ms(start)
-
-        if sources:
+        if cfg.agent.loop:
             start = time.perf_counter()
-            answer = llm.generate(build_messages(item.question, sources)).strip()
-            generation_ms = _elapsed_ms(start)
+            agent_result = run_agent(
+                item.question,
+                cfg,
+                llm=llm,
+                embedder=embedder,
+                index=index,
+                registry=registry,
+                reranker=reranker,
+                history=[{"role": t.role, "content": t.content} for t in item.history],
+            )
+            total_ms = _elapsed_ms(start)
+            result = _agent_item(i, item, agent_result, total_ms, vault_dir, judge_llm)
         else:
-            answer, generation_ms = NOT_FOUND, 0.0
-
-        abstained = is_abstention(answer)
-        verdict, reason = _grade(item, answer, abstained, judge_llm)
-        result = ItemResult(
-            index=i,
-            question=item.question,
-            answerable=item.answerable,
-            tags=list(item.tags),
-            retrieved=_to_retrieved(sources, vault_dir),
-            answer=answer,
-            abstained=abstained,
-            retrieval_ms=retrieval_ms,
-            generation_ms=generation_ms,
-            verdict=verdict,
-            judge_reason=reason,
-        )
+            result = _linear_item(
+                i, item, cfg, llm, embedder, index, registry, reranker, vault_dir, judge_llm
+            )
         results.append(result)
         if on_item is not None:
             on_item(result)
@@ -233,6 +311,17 @@ def compute_metrics(
     for name, values in latencies.items():
         metrics[f"{name}_p50_ms"] = _p(values, 50)
         metrics[f"{name}_p95_ms"] = _p(values, 95)
+
+    # Agent metrics: an agent run always records node timings; linear runs leave them empty.
+    agent = [r for r in results if r.node_ms]
+    if agent:
+        rewritten = [r for r in agent if r.rewrites > 0]
+        metrics["rewrite_rate"] = len(rewritten) / len(agent)
+        if rewritten:
+            metrics["rewrite_recovered"] = sum(not r.abstained for r in rewritten) / len(rewritten)
+        metrics["analyze_p50_ms"] = _p(
+            [r.node_ms["analyze"] for r in agent if "analyze" in r.node_ms], 50
+        )
     return metrics
 
 
@@ -289,7 +378,9 @@ def save_report(report: RunReport, out_dir: Path) -> Path:
 
 
 def load_results(path: Path) -> list[ItemResult]:
-    """The ItemResults of a file written by `save_report` (its metrics line is skipped)."""
+    """The ItemResults of a file written by `save_report` (its metrics line is skipped).
+
+    Files written before a field existed load with that field's default."""
     results: list[ItemResult] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         row = json.loads(line)

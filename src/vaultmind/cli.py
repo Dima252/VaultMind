@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 import yaml
@@ -14,9 +15,12 @@ import yaml
 from vaultmind.core.config import Config, load_config, resolve_config_path
 
 if TYPE_CHECKING:
-    from vaultmind.core.providers import Reranker
+    from vaultmind.agent.baseline import Source
+    from vaultmind.agent.types import AgentResult, TraceEvent
+    from vaultmind.core.providers import LLM, Embedder, Message, Reranker
     from vaultmind.store.index import ChunkIndex
     from vaultmind.store.registry import Registry
+    from vaultmind.store.traces import StoredRun
 
 app = typer.Typer(help="VaultMind: local, private agentic RAG over your documents.")
 eval_app = typer.Typer(help="Evaluation datasets and runs.")
@@ -180,16 +184,96 @@ def ingest(
     )
 
 
+def stream_agent(
+    question: str,
+    cfg: Config,
+    *,
+    llm: LLM,
+    embedder: Embedder,
+    index: ChunkIndex,
+    registry: Registry,
+    reranker: Reranker | None,
+    history: Sequence[Message] = (),
+) -> Iterator[str | AgentResult]:
+    """`agent.graph.stream_agent`, imported on first use to keep CLI startup fast."""
+    from vaultmind.agent.graph import stream_agent as run
+
+    return run(
+        question,
+        cfg,
+        llm=llm,
+        embedder=embedder,
+        index=index,
+        registry=registry,
+        reranker=reranker,
+        history=history,
+    )
+
+
+def _db_path(cfg: Config) -> Path:
+    return cfg.paths.data_dir / "vaultmind.sqlite"
+
+
 @app.command()
 def ask(
     question: Annotated[str, typer.Argument(help="Your question.")],
+    show_trace: Annotated[
+        bool, typer.Option("--trace", help="Print what each agent step did and how long it took.")
+    ] = False,
     config_path: ConfigOption = None,
 ) -> None:
     """Answer a question from your indexed documents, with sources."""
-    from vaultmind.agent.baseline import cited_sources, is_abstention, stream_answer
+    from vaultmind.agent.types import AgentResult
     from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM
 
     cfg = load_config(config_path)
+    if not cfg.agent.loop:
+        _ask_linear(question, cfg)
+        if show_trace:
+            typer.echo()
+            typer.echo("(no trace: agent.loop is off)")
+        return
+
+    result: AgentResult | None = None
+    with _store(cfg) as (index, registry), _ollama_errors():
+        if index.count() == 0:
+            typer.secho("[FAIL] The index is empty. Run: vaultmind ingest", fg="red")
+            raise typer.Exit(1)
+        events = stream_agent(
+            question,
+            cfg,
+            llm=OllamaLLM.from_config(cfg),
+            embedder=OllamaEmbedder.from_config(cfg),
+            index=index,
+            registry=registry,
+            reranker=_reranker(cfg),
+        )
+        for event in events:
+            if isinstance(event, AgentResult):
+                result = event
+            else:
+                typer.echo(event, nl=False)
+        typer.echo()
+    if result is None:
+        typer.secho("[FAIL] The agent ended without a result.", fg="red")
+        raise typer.Exit(1)
+
+    run_id = _save_run(cfg, result)
+    _print_agent_sources(result)
+    if show_trace:
+        typer.echo()
+        typer.echo("Trace:")
+        for line in format_trace(result.trace):
+            typer.echo(line)
+    typer.echo()
+    typer.echo(f"run {run_id}")
+
+
+def _ask_linear(question: str, cfg: Config) -> None:
+    """The linear pipeline (`agent.loop: false`), unchanged from Phase 3."""
+    from vaultmind.agent.baseline import cited_sources, is_abstention, stream_answer
+    from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM
+
     with _store(cfg) as (index, registry), _ollama_errors():
         if index.count() == 0:
             typer.secho("[FAIL] The index is empty. Run: vaultmind ingest", fg="red")
@@ -219,6 +303,163 @@ def ask(
         typer.echo(heading)
         for s in shown:
             typer.echo(f"  [{s.n}] {s.label}")
+
+
+def _save_run(cfg: Config, result: AgentResult) -> str:
+    from vaultmind.store.traces import TraceStore
+
+    store = TraceStore(_db_path(cfg))
+    try:
+        return store.save(result)
+    finally:
+        store.close()
+
+
+def _print_agent_sources(result: AgentResult) -> None:
+    """Sources (or closest matches) with their warnings, then conflicts and unsupported claims."""
+    shown: list[Source]
+    if result.abstained:
+        heading, shown = "Closest matches:", result.sources
+    else:
+        heading, shown = "Sources:", result.cited or result.sources
+    if shown:
+        typer.echo()
+        typer.echo(heading)
+        for s in shown:
+            typer.echo(f"  [{s.n}] {s.label}")
+            for warning in s.warnings:
+                typer.secho(f"      [!] {warning}", fg="yellow")
+    if result.contradictions:
+        typer.echo()
+        typer.secho("[!] Sources disagree:", fg="yellow")
+        for c in result.contradictions:
+            typer.echo(f"  [{c.source_a}] {c.claim_a}")
+            typer.echo(f"  [{c.source_b}] {c.claim_b}")
+    if result.unsupported:
+        typer.echo()
+        typer.secho("[!] Not supported by the cited sources:", fg="yellow")
+        for u in result.unsupported:
+            cited = "".join(f"[{n}]" for n in u.cited) or "(no citation)"
+            typer.echo(f"  {u.claim} {cited}: {u.reason}")
+
+
+# --- traces ---------------------------------------------------------------------------
+
+
+def _short(text: object, limit: int = 80) -> str:
+    """`text` on one line, quoted, cut to about `limit` characters."""
+    flat = " ".join(str(text).split())
+    if len(flat) > limit:
+        flat = flat[: limit - 3] + "..."
+    return f'"{flat}"'
+
+
+def _compact(data: object) -> str:
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def _summarize(node: str, data: dict[str, Any]) -> str:
+    """One-line summary of a node's trace data (keys per `agent.types`; extras ignored)."""
+    if node == "analyze":
+        parts = [f"query {_short(data.get('standalone_query', ''))}"]
+        variants = data.get("variants") or []
+        if variants:
+            parts.append("variants " + " | ".join(_short(v, 50) for v in variants))
+        if data.get("needs_retrieval") is False:
+            parts.append("no retrieval needed")
+        return ", ".join(parts)
+    if node == "retrieve":
+        queries = data.get("queries") or []
+        return f"{len(queries)} queries -> {data.get('candidates', '?')} candidates"
+    if node == "grade":
+        scores = data.get("scores") or []
+        threshold = data.get("threshold")
+        limit = "no threshold" if threshold is None else f"threshold {float(threshold):.2f}"
+        top = sorted((float(s["score"]) for s in scores), reverse=True)[:3]
+        text = f"{data.get('passed', '?')}/{len(scores)} passed ({limit})"
+        return text + (", top " + " ".join(f"{v:.2f}" for v in top) if top else "")
+    if node == "rewrite":
+        return f"attempt {data.get('attempt', '?')}: {_short(data.get('query', ''))}"
+    if node == "contradictions":
+        found = data.get("found") or []
+        pairs = " ".join(f"[{c.get('source_a')}] vs [{c.get('source_b')}]" for c in found)
+        return f"{len(found)} found" + (f": {pairs}" if pairs else "")
+    if node == "generate":
+        shown = "".join(f"[{n}]" for n in data.get("sources") or []) or "none"
+        return f"sources {shown}" + (", abstained" if data.get("abstained") else "")
+    if node == "not_found":
+        closest = data.get("closest") or []
+        return "closest: " + ("; ".join(str(c) for c in closest) or "none")
+    if node == "groundedness":
+        return f"{len(data.get('unsupported') or [])} unsupported claim(s)"
+    if node == "direct":
+        return f"no retrieval: {_short(data.get('reason', ''))}"
+    return _compact(data)
+
+
+def format_trace(events: Sequence[TraceEvent]) -> list[str]:
+    """One line per event (node, duration, summary of its data), then the total."""
+    lines: list[str] = []
+    for e in events:
+        try:
+            summary = _summarize(e.node, e.data)
+        except (AttributeError, KeyError, TypeError, ValueError):  # unexpected data shape
+            summary = _compact(e.data)
+        if "error" in e.data:
+            summary += f" [error: {e.data['error']}]"
+        lines.append(f"  {e.node:<14} {e.duration_ms:>7.0f} ms  {summary}".rstrip())
+    total = sum(e.duration_ms for e in events)
+    lines.append(f"  {'total':<14} {total:>7.0f} ms")
+    return lines
+
+
+@app.command()
+def trace(
+    run_id: Annotated[
+        str | None, typer.Argument(help="A run id printed by 'ask'. Omit to list recent runs.")
+    ] = None,
+    last: Annotated[int, typer.Option("--last", "-n", min=1, help="Runs to list.")] = 10,
+    config_path: ConfigOption = None,
+) -> None:
+    """Show a stored agent run with its trace, or list the most recent runs."""
+    from vaultmind.store.traces import TraceStore
+
+    cfg = load_config(config_path)
+    store = TraceStore(_db_path(cfg))
+    try:
+        if run_id is None:
+            _list_runs(store.recent(last))
+            return
+        run = store.get(run_id.strip())
+    finally:
+        store.close()
+
+    if run is None:
+        typer.secho(f"[FAIL] No run with id {run_id}. List them with: vaultmind trace", fg="red")
+        raise typer.Exit(1)
+    typer.echo(f"Run {run.id}  {_local_time(run)}  {_outcome(run)}")
+    typer.echo(f"Question: {run.question}")
+    typer.echo("Answer:")
+    typer.echo(run.answer)
+    typer.echo()
+    typer.echo("Trace:")
+    for line in format_trace(run.events):
+        typer.echo(line)
+
+
+def _list_runs(runs: Sequence[StoredRun]) -> None:
+    if not runs:
+        typer.echo('No runs stored yet. Ask something: vaultmind ask "..."')
+    for run in runs:
+        typer.echo(f"{run.id}  {_local_time(run)}  {_outcome(run):<9}  {_short(run.question)}")
+
+
+def _local_time(run: StoredRun) -> str:
+    return run.created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _outcome(run: StoredRun) -> str:
+    return "abstained" if run.abstained else "answered"
 
 
 @eval_app.command("import-cuad")
@@ -357,9 +598,12 @@ def eval_run(
                 items = items[:limit] if limit else items
                 typer.echo(f"{config_name} / {dataset_name}: {len(items)} items")
 
-                def progress(result: ItemResult, total: int = len(items)) -> None:
+                def progress(
+                    result: ItemResult, total: int = len(items), loop: bool = cfg.agent.loop
+                ) -> None:
                     mark = "abstained" if result.abstained else (result.verdict or "answered")
-                    typer.echo(f"  [{result.index + 1}/{total}] {mark}")
+                    extra = f" rewrites={result.rewrites}" if loop else ""
+                    typer.echo(f"  [{result.index + 1}/{total}] {mark}{extra}")
 
                 report = run_config(
                     cfg,
