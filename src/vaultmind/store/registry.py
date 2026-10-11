@@ -2,29 +2,142 @@
 
 from __future__ import annotations
 
+import sqlite3
+import threading
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from vaultmind.core.models import FileRecord, FileStatus
+
+# Migration N brings the schema from user_version N-1 to N. Append new steps; never edit old ones.
+_MIGRATIONS: dict[int, str] = {
+    1: """
+    CREATE TABLE files (
+        id         TEXT PRIMARY KEY,
+        path       TEXT NOT NULL,
+        sha256     TEXT NOT NULL,
+        status     TEXT NOT NULL CHECK (status IN ('queued', 'indexing', 'ready', 'failed')),
+        error      TEXT,
+        embedder   TEXT,
+        indexed_at TEXT
+    );
+    CREATE INDEX files_path ON files (path);
+    """,
+}
+SCHEMA_VERSION = max(_MIGRATIONS)
+
+_COLUMNS = "id, path, sha256, status, error, embedder, indexed_at"
+
+
+def _to_iso(value: datetime | None) -> str | None:
+    """ISO-8601 in UTC; naive datetimes are taken to be UTC already."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
+
+
+def _from_row(row: sqlite3.Row) -> FileRecord:
+    indexed_at = row["indexed_at"]
+    return FileRecord(
+        id=row["id"],
+        path=Path(row["path"]),
+        sha256=row["sha256"],
+        status=cast(FileStatus, row["status"]),
+        error=row["error"],
+        embedder=row["embedder"],
+        indexed_at=datetime.fromisoformat(indexed_at) if indexed_at else None,
+    )
 
 
 class Registry:
     def __init__(self, db_path: Path) -> None:
-        raise NotImplementedError
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn: sqlite3.Connection | None = sqlite3.connect(
+            db_path, check_same_thread=False, isolation_level=None
+        )
+        self._conn.row_factory = sqlite3.Row
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._migrate(self._conn)
+        except BaseException:
+            self.close()
+            raise
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"registry schema version {version} is newer than this app supports "
+                f"({SCHEMA_VERSION}); upgrade VaultMind"
+            )
+        for target in range(version + 1, SCHEMA_VERSION + 1):
+            # executescript commits any open transaction first, so wrap the step explicitly.
+            conn.executescript(
+                f"BEGIN;\n{_MIGRATIONS[target]}\nPRAGMA user_version = {target};\nCOMMIT;"
+            )
+
+    def _db(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("registry is closed")
+        return self._conn
 
     def get(self, file_id: str) -> FileRecord | None:
-        raise NotImplementedError
+        with self._lock:
+            row = self._db().execute(f"SELECT {_COLUMNS} FROM files WHERE id = ?", (file_id,))
+            found = row.fetchone()
+        return _from_row(found) if found else None
 
     def upsert(self, record: FileRecord) -> None:
-        raise NotImplementedError
+        values = (
+            record.id,
+            str(record.path),
+            record.sha256,
+            record.status,
+            record.error,
+            record.embedder,
+            _to_iso(record.indexed_at),
+        )
+        with self._lock:
+            self._db().execute(
+                f"""
+                INSERT INTO files ({_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    path = excluded.path,
+                    sha256 = excluded.sha256,
+                    status = excluded.status,
+                    error = excluded.error,
+                    embedder = excluded.embedder,
+                    indexed_at = excluded.indexed_at
+                """,
+                values,
+            )
 
     def set_status(self, file_id: str, status: FileStatus, error: str | None = None) -> None:
-        raise NotImplementedError
+        """Set the status and error together; a status without an error clears the old one."""
+        with self._lock:
+            cursor = self._db().execute(
+                "UPDATE files SET status = ?, error = ? WHERE id = ?", (status, error, file_id)
+            )
+        if cursor.rowcount == 0:
+            raise KeyError(file_id)
 
     def all(self) -> list[FileRecord]:
-        raise NotImplementedError
+        with self._lock:
+            rows = self._db().execute(f"SELECT {_COLUMNS} FROM files ORDER BY path, id").fetchall()
+        return [_from_row(r) for r in rows]
 
     def remove(self, file_id: str) -> None:
-        raise NotImplementedError
+        with self._lock:
+            self._db().execute("DELETE FROM files WHERE id = ?", (file_id,))
 
     def close(self) -> None:
-        raise NotImplementedError
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
