@@ -7,6 +7,7 @@ import pytest
 from vaultmind.agent.baseline import Answer, answer
 from vaultmind.core.config import load_config
 from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM
+from vaultmind.core.rerank import CrossEncoderReranker
 from vaultmind.ingest.pipeline import ingest_path
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
@@ -34,9 +35,18 @@ def test_ingest_then_answer_with_citation(tmp_path: Path) -> None:
         assert len(summary.added) == 2
 
         llm = OllamaLLM.from_config(cfg)
+        reranker = CrossEncoderReranker.from_config(cfg) if cfg.retrieval.rerank else None
 
         def ask(question: str) -> Answer:
-            return answer(question, cfg, llm=llm, embedder=embedder, index=index, registry=registry)
+            return answer(
+                question,
+                cfg,
+                llm=llm,
+                embedder=embedder,
+                index=index,
+                registry=registry,
+                reranker=reranker,
+            )
 
         found = ask("What is the Zephyr budget?")
         assert "41,500" in found.text or "41500" in found.text

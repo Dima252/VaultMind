@@ -14,6 +14,7 @@ from typing import Any
 
 import lancedb
 import pyarrow as pa
+from lancedb.index import FTS
 from lancedb.query import LanceVectorQueryBuilder
 
 from vaultmind.core.models import ChildChunk, ParentSection, SearchHit
@@ -44,6 +45,11 @@ _META_SCHEMA = pa.schema(
 )
 
 _CHILD_COLUMNS = ["id", "parent_id", "file_id", "text", "embed_text", "page", "section_path"]
+
+# BM25 runs over `embed_text` (title > section + text), so a question that names its document
+# matches that document's chunks. The simple tokenizer with the built-in English stemmer and
+# stop words needs no downloaded dictionaries.
+_FTS_COLUMN = "embed_text"
 
 
 class EmbedderMismatchError(Exception):
@@ -182,6 +188,31 @@ class ChunkIndex:
         hits = [SearchHit(chunk=_child_from_row(r), score=_cosine_score(r)) for r in rows]
         return sorted(hits, key=lambda h: h.score, reverse=True)
 
+    def fts_search(self, query: str, k: int) -> list[SearchHit]:
+        """BM25 keyword search over child chunks; `score` is the raw BM25 score.
+
+        The query is plain text (no query syntax). Rows added since the last `refresh_fts`
+        are still searched, just without the index.
+        """
+        if self._children is None or k <= 0 or not query.strip():
+            return []
+        if not self._has_fts():
+            self.refresh_fts()
+        rows = (
+            self._children.search(query, query_type="fts", fts_columns=_FTS_COLUMN)
+            .select([*_CHILD_COLUMNS, "_score"])
+            .limit(k)
+            .to_arrow()
+            .to_pylist()
+        )
+        hits = [SearchHit(chunk=_child_from_row(r), score=float(r["_score"])) for r in rows]
+        return sorted(hits, key=lambda h: h.score, reverse=True)
+
+    def refresh_fts(self) -> None:
+        """(Re)build the full-text index over all current child chunks."""
+        if self._children is not None and self._children.count_rows() > 0:
+            self._children.create_index(_FTS_COLUMN, config=FTS(), replace=True)
+
     def get_parents(self, parent_ids: Sequence[str]) -> dict[str, ParentSection]:
         if not parent_ids:
             return {}
@@ -195,6 +226,10 @@ class ChunkIndex:
     def count(self) -> int:
         """Number of child chunks in the index."""
         return 0 if self._children is None else int(self._children.count_rows())
+
+    def _has_fts(self) -> bool:
+        assert self._children is not None
+        return any(ix.index_type == "FTS" for ix in self._children.list_indices())
 
     def _check_dim(self, dim: int) -> None:
         if self._dim is not None and dim != self._dim:

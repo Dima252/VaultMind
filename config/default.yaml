@@ -28,6 +28,7 @@ retrieval:
   top_k: 5                  # passed to the generator
   rerank: true
   rerank_threshold: 0.3     # reranker score below this = chunk fails grading
+  small_to_big: false       # true: send each hit's parent section to the LLM, not the child chunk
 
 agent:
   rewrite: true

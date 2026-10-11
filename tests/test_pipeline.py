@@ -130,3 +130,12 @@ def test_embedder_error_marks_file_failed_and_stops(
         ingest_path(vault, CFG, embedder=BrokenEmbedder(), index=index, registry=registry)
     statuses = {r.path.name: r.status for r in registry.all()}
     assert statuses == {"a.md": "failed"}
+
+
+def test_ingested_text_is_keyword_searchable(
+    vault: Path, store: tuple[ChunkIndex, Registry]
+) -> None:
+    run(vault, store)
+    index, _ = store
+    [hit] = index.fts_search("bravo", k=5)
+    assert "Bravo is the second." in hit.chunk.text

@@ -10,9 +10,10 @@ VaultMind is a fully local, privacy-first agentic RAG desktop app. The product i
 ## Commands
 
 ```bash
-uv sync                          # install
+uv sync --extra rerank           # install (the extra = torch cu128 + sentence-transformers)
+uv run vaultmind pull-reranker   # one-time reranker download (the only HF network step)
 uv run pytest                    # unit tests (fakes, no Ollama)
-uv run pytest -m ollama          # integration tests (needs Ollama + models)
+uv run pytest -m ollama          # integration tests (needs Ollama + models + reranker)
 uv run ruff check . && uv run ruff format .
 uv run mypy src tests            # strict
 uv run vaultmind doctor          # check Ollama + models

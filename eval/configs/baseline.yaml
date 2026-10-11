@@ -1,0 +1,5 @@
+# Phase 2 baseline: top-5 vector search, parent sections to the LLM.
+retrieval:
+  hybrid: false
+  rerank: false
+  small_to_big: true

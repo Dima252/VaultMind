@@ -49,6 +49,7 @@ class RetrievalConfig(_Section):
     top_k: int = Field(default=5, gt=0)
     rerank: bool = True
     rerank_threshold: float = 0.3
+    small_to_big: bool = False  # parents measured worse on CUAD (docs/RESULTS.md, Phase 3)
 
 
 class AgentConfig(_Section):

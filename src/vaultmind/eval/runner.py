@@ -12,7 +12,7 @@ from pathlib import Path
 
 from vaultmind.agent.baseline import NOT_FOUND, Source, build_messages, is_abstention, retrieve
 from vaultmind.core.config import Config
-from vaultmind.core.providers import LLM, Embedder
+from vaultmind.core.providers import LLM, Embedder, Reranker
 from vaultmind.eval.dataset import EvalItem
 from vaultmind.eval.judge import JudgeError, judge
 from vaultmind.eval.metrics import (
@@ -129,10 +129,11 @@ def run_config(
     embedder: Embedder,
     index: ChunkIndex,
     registry: Registry,
+    reranker: Reranker | None = None,
     judge_llm: LLM | None = None,
     on_item: Callable[[ItemResult], None] | None = None,
 ) -> RunReport:
-    """Answer every item with the baseline pipeline and score the run.
+    """Answer every item with the linear pipeline (`agent.baseline`) and score the run.
 
     Retrieval and generation are timed separately. With ``judge_llm`` None, correctness is
     not measured: every verdict is None and the ``correctness`` metric is None.
@@ -141,7 +142,9 @@ def run_config(
     results: list[ItemResult] = []
     for i, item in enumerate(items):
         start = time.perf_counter()
-        sources = retrieve(item.question, cfg, embedder=embedder, index=index, registry=registry)
+        sources = retrieve(
+            item.question, cfg, embedder=embedder, index=index, registry=registry, reranker=reranker
+        )
         retrieval_ms = _elapsed_ms(start)
 
         if sources:
@@ -283,6 +286,18 @@ def save_report(report: RunReport, out_dir: Path) -> Path:
     )
     path.write_text(content, encoding="utf-8", newline="\n")
     return path
+
+
+def load_results(path: Path) -> list[ItemResult]:
+    """The ItemResults of a file written by `save_report` (its metrics line is skipped)."""
+    results: list[ItemResult] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        if "metrics" in row:
+            continue
+        retrieved = [RetrievedSource(**s) for s in row.pop("retrieved")]
+        results.append(ItemResult(**row, retrieved=retrieved))
+    return results
 
 
 def _format_value(name: str, value: float | None) -> str:

@@ -1,0 +1,5 @@
+# + BM25 keyword search fused with vector search (RRF), no reranker.
+retrieval:
+  hybrid: true
+  rerank: false
+  small_to_big: true

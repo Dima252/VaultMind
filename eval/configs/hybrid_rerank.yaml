@@ -1,0 +1,6 @@
+# Hybrid candidates (20), reranked to top 5. Threshold 0, as in rerank.yaml.
+retrieval:
+  hybrid: true
+  rerank: true
+  rerank_threshold: 0.0
+  small_to_big: true

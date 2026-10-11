@@ -13,7 +13,7 @@ from vaultmind.agent.baseline import (
     retrieve,
     stream_answer,
 )
-from vaultmind.core.config import Config
+from vaultmind.core.config import Config, RetrievalConfig
 from vaultmind.core.models import ChildChunk, FileRecord, ParentSection
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
@@ -21,7 +21,8 @@ from vaultmind.store.registry import Registry
 from .fakes import FakeEmbedder, FakeLLM
 
 FILE_ID = "0123456789abcdef"
-CFG = Config()
+# Phase 2 baseline: plain vector search, parent sections to the LLM.
+CFG = Config(retrieval=RetrievalConfig(hybrid=False, rerank=False, small_to_big=True))
 
 
 def _child(parent: ParentSection, j: int, text: str, page: int) -> ChildChunk:

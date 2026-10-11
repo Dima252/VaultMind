@@ -1,6 +1,7 @@
-"""Linear baseline RAG: embed -> vector search -> parent sections -> cited answer.
+"""Linear RAG: retrieve child chunks -> parent sections -> cited answer.
 
-This is the Phase 1 reference point the eval harness measures later phases against.
+With hybrid search and reranking off this is the Phase 1 baseline the eval measures later
+phases against; `agent.retrieval.search` adds both behind config switches.
 """
 
 from __future__ import annotations
@@ -10,9 +11,10 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from vaultmind.agent.retrieval import search
 from vaultmind.core.config import Config
 from vaultmind.core.models import SearchHit
-from vaultmind.core.providers import LLM, Embedder, Message
+from vaultmind.core.providers import LLM, Embedder, Message, Reranker
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
 
@@ -64,11 +66,23 @@ class Answer:
 
 
 def retrieve(
-    question: str, cfg: Config, *, embedder: Embedder, index: ChunkIndex, registry: Registry
+    question: str,
+    cfg: Config,
+    *,
+    embedder: Embedder,
+    index: ChunkIndex,
+    registry: Registry,
+    reranker: Reranker | None = None,
 ) -> list[Source]:
-    """Top-k child hits, collapsed to their parent sections in rank order."""
-    [vector] = embedder.embed([question])
-    hits = index.vector_search(vector, k=cfg.retrieval.top_k)
+    """Top-k child hits as numbered sources in rank order.
+
+    With `retrieval.small_to_big`, hits are collapsed to their parent sections (each cited at
+    its best child); without it, each child chunk is its own source.
+    """
+    hits = search(question, cfg, embedder=embedder, index=index, reranker=reranker)
+    if not cfg.retrieval.small_to_big:
+        return [_source(i + 1, hit, hit.chunk.text, registry) for i, hit in enumerate(hits)]
+
     best: dict[str, SearchHit] = {}
     for hit in hits:  # hits are sorted best-first; keep each parent's best child
         best.setdefault(hit.chunk.parent_id, hit)
@@ -77,20 +91,21 @@ def retrieve(
     sources: list[Source] = []
     for parent_id, hit in best.items():
         parent = parents.get(parent_id)
-        if parent is None:
-            continue
-        record = registry.get(hit.chunk.file_id)
-        sources.append(
-            Source(
-                n=len(sources) + 1,
-                file_path=record.path if record else None,
-                page=hit.chunk.page,
-                section_path=hit.chunk.section_path,  # a parent can span several sections
-                text=parent.text,
-                score=hit.score,
-            )
-        )
+        if parent is not None:
+            sources.append(_source(len(sources) + 1, hit, parent.text, registry))
     return sources
+
+
+def _source(n: int, hit: SearchHit, text: str, registry: Registry) -> Source:
+    record = registry.get(hit.chunk.file_id)
+    return Source(
+        n=n,
+        file_path=record.path if record else None,
+        page=hit.chunk.page,
+        section_path=hit.chunk.section_path,  # a parent can span several sections
+        text=text,
+        score=hit.score,
+    )
 
 
 def build_messages(question: str, sources: Sequence[Source]) -> list[Message]:
@@ -109,9 +124,12 @@ def stream_answer(
     embedder: Embedder,
     index: ChunkIndex,
     registry: Registry,
+    reranker: Reranker | None = None,
 ) -> tuple[list[Source], Iterator[str]]:
     """Retrieve, then return the sources and a token stream of the answer."""
-    sources = retrieve(question, cfg, embedder=embedder, index=index, registry=registry)
+    sources = retrieve(
+        question, cfg, embedder=embedder, index=index, registry=registry, reranker=reranker
+    )
     if not sources:
         return [], iter([NOT_FOUND])
     return sources, llm.stream(build_messages(question, sources))
@@ -125,8 +143,11 @@ def answer(
     embedder: Embedder,
     index: ChunkIndex,
     registry: Registry,
+    reranker: Reranker | None = None,
 ) -> Answer:
-    sources = retrieve(question, cfg, embedder=embedder, index=index, registry=registry)
+    sources = retrieve(
+        question, cfg, embedder=embedder, index=index, registry=registry, reranker=reranker
+    )
     if not sources:
         return Answer(NOT_FOUND, [])
     return Answer(llm.generate(build_messages(question, sources)).strip(), sources)

@@ -3,7 +3,7 @@
 **A fully local, privacy-first AI assistant for your own documents.**
 Drop in PDFs, Markdown or text files and ask questions about them. VaultMind finds the relevant passages, checks that they actually answer the question, retries with a better search when they don't, and answers with citations, all on your own machine. Nothing is sent to a cloud API.
 
-> 🚧 **Status: in development.** Ingestion and cited question answering work from the command line. The evaluation harness is next. See [status](docs/STATUS.md) and the [execution plan](docs/EXECUTION_PLAN.md). Evaluation results will be published here as each phase lands.
+> 🚧 **Status: in development.** Ingestion, hybrid retrieval with reranking, cited question answering, and the evaluation harness work from the command line; the corrective agent loop is next. See [status](docs/STATUS.md) and the [execution plan](docs/EXECUTION_PLAN.md). Evaluation results will be published here as each phase lands.
 
 <!-- TODO(Phase 7): demo GIF here, showing the agent rejecting weak chunks, rewriting the query, and answering with citations -->
 
@@ -82,9 +82,12 @@ cd VaultMind
 ollama pull qwen3:14b
 ollama pull qwen3-embedding:0.6b
 
-uv sync
+uv sync --extra rerank      # includes torch (CUDA 12.8 build) for the reranker
+uv run vaultmind pull-reranker   # one-time download of bge-reranker-v2-m3 (~2.3 GB)
 uv run vaultmind doctor     # checks Ollama and the models
 ```
+
+After these setup steps nothing touches the network: the reranker is loaded from the local cache in offline mode. To skip the reranker, run plain `uv sync` and set `retrieval.rerank: false`.
 
 Put your documents in `vault/` (PDF, Markdown, or text), then:
 

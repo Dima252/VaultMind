@@ -112,6 +112,8 @@ def ingest_path(
         registry.remove(record.id)
         summary.removed.append(record.path)
 
+    if summary.added or summary.updated or summary.removed or summary.failed:
+        index.refresh_fts()
     return summary
 
 

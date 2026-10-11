@@ -1,0 +1,7 @@
+# Vector search for 20 candidates, cross-encoder reranks to top 5. Threshold 0 = keep all
+# 5 so the threshold can be swept offline (`vaultmind eval sweep`).
+retrieval:
+  hybrid: false
+  rerank: true
+  rerank_threshold: 0.0
+  small_to_big: true

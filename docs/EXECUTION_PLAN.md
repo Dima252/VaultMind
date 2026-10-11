@@ -74,15 +74,17 @@ Goal: one command that scores any config. This turns "I think it's better" into 
 
 Goal: raise recall@5. Measure each step separately with an ablation config.
 
-Dependencies: `uv add sentence-transformers`, plus torch from the CUDA 12.8+ index (the RTX 50 series is Blackwell and needs cu128 or newer).
+Dependencies: `sentence-transformers` + torch from the CUDA 12.8 index, as the optional `rerank` extra (`uv sync --extra rerank`; the RTX 50 series is Blackwell and needs cu128 or newer). The model is fetched once with `vaultmind pull-reranker` and loaded offline.
 
-- [ ] **Hybrid search:** LanceDB full-text index on child text, run alongside vector search, fused with reciprocal rank fusion. Config: `retrieval.hybrid`.
-- [ ] **Reranker:** `core/rerank.py` wrapping a sentence-transformers `CrossEncoder` (bge-reranker-v2-m3) on the GPU. Rerank `candidates` (20) down to `top_k` (5). Config: `retrieval.rerank`.
-- [ ] **Small-to-big:** search over children, deduplicate by parent, and send parent sections to the LLM. Compare answer correctness, not just recall.
-- [ ] Tune `rerank_threshold` against the eval set: plot the threshold against answerable recall and unanswerable abstention, then pick the best balance.
-- [ ] Record each ablation in `RESULTS.md`.
+- [x] **Hybrid search:** LanceDB native full-text index (BM25) on the child's `embed_text` (title > section + text), run alongside vector search, fused with reciprocal rank fusion (k=60). Config: `retrieval.hybrid`.
+- [x] **Reranker:** `core/rerank.py` wrapping a sentence-transformers `CrossEncoder` (bge-reranker-v2-m3, fp16) on the GPU. Rerank `candidates` (20) down to `top_k` (5). Config: `retrieval.rerank`.
+- [x] **Small-to-big:** search over children, deduplicate by parent, and send parent sections to the LLM. Compare answer correctness, not just recall. (Config: `retrieval.small_to_big`. Measured worse than sending the graded children, about -8 points correctness over 3 runs each, so it's off by default.)
+- [x] Tune `rerank_threshold` against the eval set: plot the threshold against answerable recall and unanswerable abstention, then pick the best balance. (`vaultmind eval sweep`; kept at 0.3, see RESULTS.md.)
+- [x] Record each ablation in `RESULTS.md`.
 
 **Done when:** each technique has a measured contribution, whether positive or not. Keep only what helps.
+
+> Status: done 2026-10-12. Hybrid + rerank lift CUAD evidence recall@5 from 0.708 to 0.958; the new default (hybrid + rerank + child chunks) lifts correctness from ~0.64 to ~0.79 and abstention accuracy from ~0.75 to ~0.86 at ~0.3 s extra latency. Details in RESULTS.md.
 
 ## Phase 4: Agentic corrective loop
 

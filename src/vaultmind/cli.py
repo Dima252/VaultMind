@@ -14,6 +14,7 @@ import yaml
 from vaultmind.core.config import Config, load_config, resolve_config_path
 
 if TYPE_CHECKING:
+    from vaultmind.core.providers import Reranker
     from vaultmind.store.index import ChunkIndex
     from vaultmind.store.registry import Registry
 
@@ -64,6 +65,19 @@ def _ollama_errors() -> Iterator[None]:
         raise typer.Exit(1) from exc
 
 
+def _reranker(cfg: Config) -> Reranker | None:
+    """The configured cross-encoder when `retrieval.rerank` is on, with friendly errors."""
+    if not cfg.retrieval.rerank:
+        return None
+    from vaultmind.core.rerank import CrossEncoderReranker, RerankerUnavailableError
+
+    try:
+        return CrossEncoderReranker.from_config(cfg)
+    except RerankerUnavailableError as exc:
+        typer.secho(f"[FAIL] {exc} (or set retrieval.rerank: false)", fg="red")
+        raise typer.Exit(1) from exc
+
+
 @app.command()
 def config(config_path: ConfigOption = None) -> None:
     """Print the effective configuration."""
@@ -92,8 +106,41 @@ def doctor(config_path: ConfigOption = None) -> None:
             typer.secho(f"[FAIL] {name} not pulled - run: ollama pull {name}", fg="red")
         else:
             typer.secho(f"[ OK ] {name}", fg="green")
+    if cfg.retrieval.rerank and not _check_reranker(cfg.models.reranker):
+        missing.append(cfg.models.reranker)
     if missing:
         raise typer.Exit(1)
+
+
+def _check_reranker(name: str) -> bool:
+    from importlib.util import find_spec
+
+    from vaultmind.core.rerank import is_downloaded
+
+    if find_spec("sentence_transformers") is None:
+        typer.secho("[FAIL] reranker extra missing - run: uv sync --extra rerank", fg="red")
+        return False
+    if not is_downloaded(name):
+        typer.secho(f"[FAIL] {name} not downloaded - run: vaultmind pull-reranker", fg="red")
+        return False
+    typer.secho(f"[ OK ] {name}", fg="green")
+    return True
+
+
+@app.command("pull-reranker")
+def pull_reranker(config_path: ConfigOption = None) -> None:
+    """Download the configured reranker model (the only step that uses the internet)."""
+    from importlib.util import find_spec
+
+    from vaultmind.core.rerank import download
+
+    if find_spec("sentence_transformers") is None:
+        typer.secho("[FAIL] Run first: uv sync --extra rerank", fg="red")
+        raise typer.Exit(1)
+    cfg = load_config(config_path)
+    typer.echo(f"Downloading {cfg.models.reranker} from Hugging Face ...")
+    path = download(cfg.models.reranker)
+    typer.secho(f"[ OK ] {cfg.models.reranker} -> {path}", fg="green")
 
 
 @app.command()
@@ -154,6 +201,7 @@ def ask(
             embedder=OllamaEmbedder.from_config(cfg),
             index=index,
             registry=registry,
+            reranker=_reranker(cfg),
         )
         parts: list[str] = []
         for token in tokens:
@@ -293,6 +341,7 @@ def eval_run(
     run_dir = out_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
     judge_llm = OllamaLLM.from_config(next(iter(configs.values()))) if judge else None
     reports: list[RunReport] = []
+    rerankers: dict[str, Reranker | None] = {}  # loaded once per model, shared across configs
     for config_name, cfg in configs.items():
         with _store(cfg) as (index, registry), _ollama_errors():
             if index.count() == 0:
@@ -301,6 +350,9 @@ def eval_run(
                 )
                 raise typer.Exit(1)
             llm, embedder = OllamaLLM.from_config(cfg), OllamaEmbedder.from_config(cfg)
+            if cfg.retrieval.rerank and cfg.models.reranker not in rerankers:
+                rerankers[cfg.models.reranker] = _reranker(cfg)
+            reranker = rerankers.get(cfg.models.reranker) if cfg.retrieval.rerank else None
             for dataset_name, items in loaded.items():
                 items = items[:limit] if limit else items
                 typer.echo(f"{config_name} / {dataset_name}: {len(items)} items")
@@ -318,6 +370,7 @@ def eval_run(
                     embedder=embedder,
                     index=index,
                     registry=registry,
+                    reranker=reranker,
                     judge_llm=judge_llm,
                     on_item=progress,
                 )
@@ -328,6 +381,34 @@ def eval_run(
     typer.echo(format_table(reports))
     typer.echo()
     typer.echo(f"Raw results: {run_dir}")
+
+
+@eval_app.command("sweep")
+def eval_sweep(
+    results: Annotated[
+        Path, typer.Argument(help="A results file from 'eval run' with rerank_threshold: 0.")
+    ],
+    dataset: Annotated[
+        str, typer.Option("--dataset", "-d", help="The dataset that run scored.")
+    ] = "cuad",
+    step: Annotated[float, typer.Option(min=0.01, max=1.0, help="Threshold step.")] = 0.05,
+) -> None:
+    """Replay rerank thresholds over a saved run: evidence recall vs. abstention."""
+    from vaultmind.eval.dataset import load_dataset
+    from vaultmind.eval.runner import load_results
+    from vaultmind.eval.sweep import format_sweep, sweep
+
+    try:
+        items = load_dataset(_dataset_path(dataset))
+        rows = sweep(
+            items,
+            load_results(results),
+            [round(i * step, 4) for i in range(round(1 / step))],
+        )
+    except (ValueError, OSError) as exc:
+        typer.secho(f"[FAIL] {exc}", fg="red")
+        raise typer.Exit(1) from exc
+    typer.echo(format_sweep(rows))
 
 
 if __name__ == "__main__":

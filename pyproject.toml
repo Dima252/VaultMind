@@ -17,6 +17,12 @@ dependencies = [
 [project.scripts]
 vaultmind = "vaultmind.cli:app"
 
+[project.optional-dependencies]
+rerank = [
+    "sentence-transformers>=6.1.0",
+    "torch>=2.11.0",
+]
+
 [dependency-groups]
 dev = [
     "mypy>=1.11",
@@ -45,12 +51,25 @@ strict = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["ollama.*", "lancedb.*", "pyarrow.*", "pymupdf.*", "pymupdf4llm.*", "fitz.*"]
+module = [
+    "ollama.*", "lancedb.*", "pyarrow.*", "pymupdf.*", "pymupdf4llm.*", "fitz.*",
+    # the optional `rerank` extra (not installed in CI)
+    "torch.*", "sentence_transformers.*", "transformers.*", "huggingface_hub.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-m 'not ollama'"
 markers = [
-    "ollama: needs a running Ollama daemon with the configured models pulled",
+    "ollama: needs real models: a running Ollama daemon with the configured models pulled, plus the rerank extra and the downloaded reranker",
 ]
+
+# torch for the reranker: CUDA 12.8 wheels (RTX 50 / Blackwell needs cu128+) on Windows and Linux.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

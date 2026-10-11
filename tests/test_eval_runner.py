@@ -8,7 +8,13 @@ from typing import Any
 import pytest
 
 from vaultmind.agent.baseline import NOT_FOUND
-from vaultmind.core.config import ChunkingConfig, Config, ModelsConfig, PathsConfig
+from vaultmind.core.config import (
+    ChunkingConfig,
+    Config,
+    ModelsConfig,
+    PathsConfig,
+    RetrievalConfig,
+)
 from vaultmind.core.models import ChildChunk, FileRecord, ParentSection
 from vaultmind.eval import runner
 from vaultmind.eval.dataset import EvalItem
@@ -21,6 +27,7 @@ from vaultmind.eval.runner import (
     check_compatible,
     compute_metrics,
     format_table,
+    load_results,
     run_config,
     save_report,
 )
@@ -82,7 +89,10 @@ def vault(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def cfg(vault: Path, tmp_path: Path) -> Config:
-    return Config(paths=PathsConfig(vault_dir=vault, data_dir=tmp_path / "data"))
+    return Config(
+        paths=PathsConfig(vault_dir=vault, data_dir=tmp_path / "data"),
+        retrieval=RetrievalConfig(hybrid=False, rerank=False),
+    )
 
 
 @pytest.fixture
@@ -165,7 +175,10 @@ def test_run_config_records_sources_and_answer(
 
 
 def test_vault_dir_is_resolved(store: tuple[ChunkIndex, Registry], vault: Path) -> None:
-    cfg = Config(paths=PathsConfig(vault_dir=vault / "docs" / ".." / "."))
+    cfg = Config(
+        paths=PathsConfig(vault_dir=vault / "docs" / ".." / "."),
+        retrieval=RetrievalConfig(hybrid=False, rerank=False),
+    )
     report = _run(cfg, store, [_item()], FakeLLM(["ok"]))
     assert report.items[0].retrieved[0].file == "docs/manual.pdf"
 
@@ -445,6 +458,7 @@ def test_save_report_round_trip(tmp_path: Path) -> None:
         for row in rows[:2]
     ]
     assert restored == report.items
+    assert load_results(path) == report.items
     assert rows[2] == {"metrics": report.metrics}
     assert list(rows[2]["metrics"]) == list(METRIC_NAMES)
 

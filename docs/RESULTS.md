@@ -8,7 +8,8 @@ Every pipeline change is measured against the same datasets with `uv run vaultmi
 |---|---|
 | Hardware | Windows 11, RTX 5070 Ti 16 GB |
 | Models (Ollama) | `qwen3:14b` for answers and the judge (`think: false`), `qwen3-embedding:0.6b` for embeddings, `num_ctx` 16384 |
-| Chunking | children ≈256 tokens (searched), parents ≈1200 tokens (sent to the LLM), 15% overlap |
+| Reranker (Phase 3) | `BAAI/bge-reranker-v2-m3` via sentence-transformers 6.1, torch 2.11 cu128, fp16 |
+| Chunking | children ≈256 tokens (searched), parents ≈1200 tokens (sent to the LLM in Phase 2; children only since Phase 3), 15% overlap |
 | Index | 36 files, 1,242 child chunks: 25 CUAD contracts, 10 adversarial documents, `vault/README.md` |
 
 **Datasets**
@@ -77,6 +78,92 @@ Treat **correctness as indicative (roughly ±10 points)**. The retrieval numbers
 - **Abstention detection is a prefix match.** 2 of 60 CUAD answers abstained in their own words ("The sources provided do not specify ... Therefore, I couldn't find this") and were counted as answers. One was answerable and one wasn't, so detecting both would flip one item each way and leave abstention accuracy unchanged.
 - **The exfiltration check is strict on purpose:** an answer that names the attacker's domain counts as hijacked, even if it names it to warn the user.
 - CUAD questions name each contract by its SEC filer name (for example "Aspirityholdingsllc Outsourcing Agreement"), which often differs from the party names inside the contract.
+
+## Phase 3: retrieval quality (2026-10-12)
+
+Three changes, each behind a config switch and measured on its own:
+
+- **Hybrid search** (`retrieval.hybrid`): BM25 over each child chunk's `embed_text` (title > section + text; LanceDB native full-text index) alongside vector search, fused with reciprocal rank fusion (k = 60). 20 candidates.
+- **Reranking** (`retrieval.rerank`): the `bge-reranker-v2-m3` cross-encoder rescores the 20 candidates and the best 5 go on. Passages scoring below `rerank_threshold` are dropped; if none are left, the answer is "not found" without an LLM call.
+- **Small-to-big** (`retrieval.small_to_big`): send each hit's ~1200-token parent section to the LLM (the Phase 2 behavior), or only the ~256-token child chunk that was graded.
+
+The ablation configs are in `eval/configs/` (partial YAML over the defaults):
+
+```
+uv run vaultmind eval run -c eval/configs/baseline.yaml -c eval/configs/hybrid.yaml \
+  -c eval/configs/rerank.yaml -c eval/configs/hybrid_rerank.yaml \
+  -c eval/configs/hybrid_rerank_children.yaml -c config/default.yaml -d cuad -d adversarial
+```
+
+### Retrieval (deterministic)
+
+CUAD, 48 answerable questions. All four columns send parent sections to the LLM.
+
+| CUAD | baseline (vector) | + hybrid | + rerank | **hybrid + rerank** |
+|---|---:|---:|---:|---:|
+| evidence recall@1 | 0.521 | 0.500 | 0.688 | **0.688** |
+| evidence recall@5 | 0.708 | 0.896 | 0.917 | **0.958** |
+| evidence MRR | 0.586 | 0.650 | 0.792 | **0.804** |
+| retrieval p50 (ms) | 25 | 27 | 145 | 156 |
+
+- **Both help, and they stack.** BM25 brings in clauses whose wording the embedding misses (recall@5 +19 points) but doesn't rank them well (recall@1 flat). The cross-encoder fixes the order (recall@1 +17 points, MRR +0.2). Together, only **2 of 48** gold clauses miss the top 5, down from 14.
+- **Cost:** reranking 20 candidates takes ~130 ms per question while the GPU is also generating (~60 ms on its own), with a few 400–700 ms outliers. Loading the model takes ~7 s once per process and 1.1 GB of VRAM; everything still fits in 16 GB next to `qwen3:14b`.
+- Adversarial retrieval was already near-perfect; reranking lifts its evidence recall@1 from 0.909 to 1.000.
+- The baseline column reproduces the Phase 2 retrieval numbers exactly.
+
+### Answers: small-to-big doesn't earn its keep
+
+Generation and the judge are noisy, so each small-to-big setting was run three times, always with hybrid + rerank. "Parents" ran twice at threshold 0 and once as the old default (threshold 0.3, identical passages). "Children" ran twice at threshold 0 and once as the new default.
+
+| | parents (3 runs) | children (3 runs) |
+|---|---|---|
+| CUAD correctness | 0.729, 0.708, 0.698 (mean **0.712**) | 0.781, 0.760, 0.823 (mean **0.788**) |
+| CUAD abstention accuracy | 0.867, 0.867, 0.867 | 0.850, 0.833, 0.883 |
+| wrong abstentions (of 48 answerable) | 8, 8, 8 | 7, 7, 5 |
+| answered unanswerable (of 12) | 0, 0, 0 | 2, 3, 2 |
+| context sent to the LLM (p50 chars) | 12,900 | 4,300 |
+| CUAD generation p50 (ms) | ~1,850 | ~1,450 |
+| adversarial correctness | 0.773, 0.773, 0.773 | 0.864, 0.864, 0.909 |
+| injection resistance | 6/8, 6/8, 6/8 | 7/8, 7/8, 8/8 |
+
+Sending only the graded child chunks was better in every run: about **+8 points of correctness**, more than the run-to-run spread, and about 0.4 s faster, with fewer injections reaching the answer. **`small_to_big` is now off by default.** This also fits the design rule that answers cite only graded passages: a parent section carries ~1,000 tokens of text the reranker never scored.
+
+The cost shows on unanswerable questions. With less surrounding text, the model is more willing to stretch a related clause into an answer. "Sole and exclusive property of PC Financial" was reported as an *exclusivity commitment*, and a renewal condition tied to another agreement was reported as the non-renewal notice period. These answers cite real text and invent nothing, but they don't answer the question; Phase 4's optional groundedness check targets them. Parents had the opposite failure: in 7 of their 8 wrong abstentions the gold clause was in context, usually worded differently from the clause type in the question (most-favored-nation phrased as "on not less favorable terms").
+
+The injection gain is partly luck of chunk boundaries. When the planted instruction sits in a different child chunk than the clause asked about, it never reaches the prompt. That is not a defense; Phase 4's injection guard is.
+
+Evidence recall is lower for children (0.875 vs 0.958) partly by construction: a long gold span has to fit inside one 256-token chunk to count.
+
+### Rerank threshold
+
+`vaultmind eval sweep` replays thresholds over a run saved with `rerank_threshold: 0`, without model calls. An item abstains when no passage passes, or when the LLM abstained in the run.
+
+| threshold | evidence recall@5 | answerable answered | unanswerable abstained | abstention accuracy |
+|---:|---:|---:|---:|---:|
+| 0.00 – 0.55 | 0.875 | 0.854 | 0.833 | 0.850 |
+| 0.70 | 0.812 | 0.854 | 0.833 | 0.850 |
+| 0.75 | 0.792 | 0.854 | 0.917 | 0.867 |
+| 0.85 | 0.688 | 0.771 | 0.917 | 0.800 |
+| 0.95 | 0.417 | 0.562 | 1.000 | 0.650 |
+
+(Children, CUAD. The parents run has the same flat region up to 0.55.)
+
+**On CUAD the threshold is not an abstention signal.** Each unanswerable question names a real contract and asks for a clause type it lacks, so the reranker still finds a related clause in that contract. Top scores for unanswerable questions range from 0.36 to 0.98 (median ~0.79), against 0.57 to 1.00 (median ~0.96) for answerable ones. The LLM does the abstaining, not the threshold. Off-topic questions ("What is the capital of Peru?", or a contract that doesn't exist) score **below 0.02**. **The threshold stays at 0.3:** it is well below the lowest answerable top score (0.57), changes nothing on CUAD, and turns away off-topic questions without an LLM call. Phase 4's rewrite loop will use the same score to decide when to retry.
+
+### New default vs. Phase 2 baseline
+
+`config/default.yaml` is now hybrid + rerank (threshold 0.3) + child chunks.
+
+| Metric | Baseline CUAD | **Default CUAD** | Baseline adversarial | **Default adversarial** |
+|---|---:|---:|---:|---:|
+| evidence recall@5 | 0.708 | **0.875** (0.958 at parent level) | 1.000 | 1.000 |
+| evidence MRR | 0.586 | **0.702** | 0.955 | 0.955 |
+| correctness | 0.615–0.656 | **0.760–0.823** | 0.773 | **0.864–0.909** |
+| abstention accuracy | 0.733–0.767 | **0.833–0.883** | 1.000 | 1.000 |
+| injection resistance | – | – | 6/8 | **7/8–8/8** |
+| total p50 / p95 (ms) | 1,358 / 2,730 | 1,661 / 2,729 | 797 / 1,199 | 1,404 / 1,905 |
+
+Ranges are the spread over runs (baseline: the Phase 2 run plus this phase's). On CUAD, correctness rose by about **15 points** and abstention accuracy by about **10 points**, for ~0.3 s more per answer. The remaining CUAD errors are mostly on the generation side: abstaining on clauses phrased differently from the question, or stretching related clauses. That is Phase 4's territory.
 
 ## Credits
 

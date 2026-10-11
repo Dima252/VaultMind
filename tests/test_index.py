@@ -196,3 +196,50 @@ def test_get_parents_returns_only_found(tmp_path: Path) -> None:
     assert set(found) == {f"{FILE_A}:p0", f"{FILE_B}:p0"}
     assert found[f"{FILE_A}:p0"].file_id == FILE_A
     assert index.get_parents([]) == {}
+
+
+def _keyword_chunks(index: ChunkIndex) -> list[ChildChunk]:
+    parents, children = _chunks(FILE_A, 3)
+    texts = ["governing law of Delaware", "payment due in sixty days", "termination for cause"]
+    children = [
+        replace(c, text=t, embed_text=f"Supply Agreement > Terms\n\n{t}")
+        for c, t in zip(children, texts, strict=True)
+    ]
+    index.add(parents, children, EMBEDDER.embed([c.embed_text for c in children]))
+    return children
+
+
+def test_fts_search_ranks_keyword_match_first(tmp_path: Path) -> None:
+    index = _index(tmp_path)
+    children = _keyword_chunks(index)
+    hits = index.fts_search("Which laws govern the agreement?", k=3)  # stemmed: laws -> law
+    assert hits[0].chunk == children[0]
+    assert hits[0].score > 0
+    assert [h.score for h in hits] == sorted((h.score for h in hits), reverse=True)
+
+
+def test_fts_search_matches_title_prefix(tmp_path: Path) -> None:
+    index = _index(tmp_path)
+    _keyword_chunks(index)
+    assert len(index.fts_search("supply", k=10)) == 3  # every chunk carries the title
+
+
+def test_fts_search_sees_rows_added_and_deleted_after_refresh(tmp_path: Path) -> None:
+    index = _index(tmp_path)
+    _add(index, FILE_A, 2)
+    index.refresh_fts()
+    _add(index, FILE_B, 2)
+    assert {h.chunk.file_id for h in index.fts_search(FILE_B, k=10)} == {FILE_B}
+    index.delete_file(FILE_A)
+    assert index.fts_search(FILE_A, k=10) == []
+
+
+def test_fts_search_edge_cases(tmp_path: Path) -> None:
+    index = _index(tmp_path)
+    assert index.fts_search("anything", k=5) == []  # no children table yet
+    index.refresh_fts()  # no-op on an empty index
+    _add(index, FILE_A, 2)
+    assert index.fts_search("   ", k=5) == []
+    assert index.fts_search("chunk", k=0) == []
+    # Not parsed as query syntax: punctuation is dropped and the words are matched.
+    assert len(index.fts_search('"chunk" AND (x) -y: *?', k=5)) == 2
