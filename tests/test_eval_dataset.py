@@ -54,7 +54,8 @@ def test_save_format(tmp_path: Path) -> None:
     assert "\\u" not in text
     assert lines[0] == (
         '{"question":"What is the refund window?","answer":"30 days.",'
-        '"source_file":"policies/refunds.pdf","source_page":2,"answerable":true,"tags":["fact"]}'
+        '"source_file":"policies/refunds.pdf","source_page":2,"answerable":true,"tags":["fact"],'
+        '"evidence":[]}'
     )
 
 
@@ -123,6 +124,18 @@ def test_unanswerable_rejects_source_file() -> None:
 def test_unanswerable_rejects_source_page() -> None:
     with pytest.raises(ValidationError, match="unanswerable"):
         EvalItem(question="q", answer="", source_file=None, source_page=1, answerable=False)
+
+
+def test_unanswerable_rejects_evidence() -> None:
+    with pytest.raises(ValidationError, match="no evidence"):
+        EvalItem(
+            question="q",
+            answer="",
+            source_file=None,
+            source_page=None,
+            answerable=False,
+            evidence=["span"],
+        )
 
 
 @pytest.mark.parametrize("source_file", [None, "", "   "])

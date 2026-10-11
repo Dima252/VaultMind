@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from vaultmind.store.registry import Registry
 
 app = typer.Typer(help="VaultMind: local, private agentic RAG over your documents.")
+eval_app = typer.Typer(help="Evaluation datasets and runs.")
+app.add_typer(eval_app, name="eval")
 
 ConfigOption = Annotated[Path | None, typer.Option("--config", "-c", help="Path to a YAML config.")]
 
@@ -169,6 +171,55 @@ def ask(
         typer.echo(heading)
         for s in shown:
             typer.echo(f"  [{s.n}] {s.label}")
+
+
+@eval_app.command("import-cuad")
+def import_cuad(
+    zip_path: Annotated[
+        Path, typer.Option("--zip", help="CUAD data.zip (contains CUADv1.json).")
+    ] = Path("eval/corpora/cuad/data.zip"),
+    out: Annotated[Path, typer.Option(help="Dataset JSONL to write.")] = Path(
+        "eval/datasets/cuad.jsonl"
+    ),
+    contracts: Annotated[int, typer.Option(min=1, help="Contracts to copy into the vault.")] = 25,
+    questions: Annotated[int, typer.Option(min=1, help="Questions to generate.")] = 60,
+    unanswerable: Annotated[
+        float, typer.Option(min=0.0, max=1.0, help="Share of unanswerable questions.")
+    ] = 0.2,
+    seed: Annotated[int, typer.Option(help="Sampling seed; same seed, same subset.")] = 0,
+    max_chars: Annotated[int, typer.Option(help="Skip contracts longer than this.")] = 100_000,
+    config_path: ConfigOption = None,
+) -> None:
+    """Copy a CUAD contract subset into <vault>/cuad/ and write its eval dataset."""
+    from vaultmind.eval.cuad import SUBDIR
+    from vaultmind.eval.cuad import import_cuad as run_import
+
+    cfg = load_config(config_path)
+    if not zip_path.exists():
+        typer.secho(f"[FAIL] {zip_path} not found. Copy CUAD's data.zip there.", fg="red")
+        raise typer.Exit(1)
+    try:
+        summary = run_import(
+            zip_path,
+            cfg.paths.vault_dir,
+            out,
+            n_contracts=contracts,
+            n_questions=questions,
+            unanswerable_share=unanswerable,
+            seed=seed,
+            max_chars=max_chars,
+        )
+    except ValueError as exc:
+        typer.secho(f"[FAIL] {exc}", fg="red")
+        raise typer.Exit(1) from exc
+
+    n_unanswerable = sum(not item.answerable for item in summary.items)
+    typer.echo(
+        f"{len(summary.written)} contracts in {cfg.paths.vault_dir / SUBDIR} "
+        f"({len(summary.removed)} stale removed)"
+    )
+    typer.echo(f"{len(summary.items)} questions ({n_unanswerable} unanswerable) written to {out}")
+    typer.echo("Next: review the questions, then run: vaultmind ingest")
 
 
 if __name__ == "__main__":

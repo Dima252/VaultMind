@@ -21,6 +21,7 @@ vault/*
 *.sqlite
 *.sqlite3
 eval/results/
+eval/corpora/
 
 # Local config overrides
 config/local.yaml

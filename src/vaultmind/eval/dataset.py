@@ -12,7 +12,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 class EvalItem(BaseModel):
     """One question. Answerable items name a gold source; unanswerable ones name none.
 
-    Rules: if ``answerable`` is false, ``source_file`` and ``source_page`` must be None.
+    Rules: if ``answerable`` is false, ``source_file`` and ``source_page`` must be None and
+    ``evidence`` empty.
     If ``answerable`` is true, ``source_file`` is required (non-blank). ``source_page``,
     when given, is 1-based (>= 1). Unknown keys are rejected so typos surface early.
     """
@@ -25,6 +26,7 @@ class EvalItem(BaseModel):
     source_page: int | None
     answerable: bool = True
     tags: list[str] = []  # e.g. "exact-term", "multi-hop", "follow-up"
+    evidence: list[str] = []  # gold text spans from the source, when known (span-level recall)
 
     @model_validator(mode="after")
     def _check_source(self) -> EvalItem:
@@ -35,6 +37,8 @@ class EvalItem(BaseModel):
                 raise ValueError("answerable items require source_file")
         elif self.source_file is not None or self.source_page is not None:
             raise ValueError("unanswerable items must have source_file and source_page set to None")
+        elif self.evidence:
+            raise ValueError("unanswerable items must have no evidence")
         return self
 
 
