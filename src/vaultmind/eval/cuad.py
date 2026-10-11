@@ -4,8 +4,9 @@ CUAD (https://www.atticusprojectai.org/cuad, CC BY 4.0) is 510 commercial contra
 format, with clause spans labeled by lawyers for 41 categories. We pick a seeded subset of
 contracts, write each one as a .txt file under ``<vault>/cuad/``, and turn some of their labels
 into eval items. Questions name their contract so they stay unambiguous in a multi-document
-vault. A category with no labeled span becomes an unanswerable item: that clause is absent from
-that contract (the annotators' call, so spot-check those items).
+vault. A category with no labeled span (and no labeled span in its ``RELATED`` categories)
+becomes an unanswerable item: that clause is absent from that contract (the annotators' call, so
+spot-check those items).
 """
 
 from __future__ import annotations
@@ -56,6 +57,27 @@ QUESTIONS: dict[str, str] = {
     "Warranty Duration": "How long do the warranties under {contract} last?",
     "Insurance": "What insurance must be maintained under {contract}?",
     "Source Code Escrow": "What source code escrow arrangement does {contract} set up?",
+}
+
+# CUAD categories overlap (its "Exclusivity" sections are sometimes filed under Non-Compete), so a
+# question only counts as unanswerable when its related categories are empty too.
+RELATED: dict[str, tuple[str, ...]] = {
+    "Agreement Date": ("Effective Date",),
+    "Exclusivity": ("Non-Compete", "No-Solicit Of Customers"),
+    "Non-Compete": ("Exclusivity", "No-Solicit Of Customers", "Competitive Restriction Exception"),
+    "Renewal Term": ("Notice Period To Terminate Renewal",),
+    "Notice Period To Terminate Renewal": ("Renewal Term",),
+    "Most Favored Nation": ("Price Restrictions",),
+    "Minimum Commitment": ("Volume Restriction",),
+    "Cap On Liability": ("Uncapped Liability",),
+    "Ip Ownership Assignment": ("Joint Ip Ownership",),
+    "License Grant": (
+        "Affiliate License-Licensor",
+        "Affiliate License-Licensee",
+        "Non-Transferable License",
+        "Irrevocable Or Perpetual License",
+        "Unlimited/All-You-Can-Eat-License",
+    ),
 }
 
 # EDGAR-style titles: FILER_YYYYMMDD_..._Kind or FILER_MM_DD_YYYY-EX-n-KIND.
@@ -195,7 +217,10 @@ def build_items(
             if category not in contract.clauses:
                 continue
             spans = _spans(contract.clauses[category])
-            (answerable if spans else unanswerable).append((source_file, name, category, spans))
+            if spans:
+                answerable.append((source_file, name, category, spans))
+            elif not any(contract.clauses.get(r) for r in RELATED.get(category, ())):
+                unanswerable.append((source_file, name, category, spans))
 
     n_unanswerable = round(n_questions * unanswerable_share)
     n_answerable = n_questions - n_unanswerable

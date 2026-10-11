@@ -138,6 +138,20 @@ def test_build_items_spreads_categories() -> None:
     assert tags == ["governing-law"] * 2 + ["insurance"] * 2 + ["parties"] * 2
 
 
+def test_related_category_blocks_unanswerable() -> None:
+    clauses: dict[str, list[str]] = {cat: [] for cat in CATEGORIES} | {
+        "Non-Compete": ["will not endorse competing products"],  # CUAD's home for exclusivity
+        "Governing Law": ["laws of Delaware"],
+    }
+    triples = [("cuad/C.txt", "C", Contract("C", "", clauses))]
+    n_empty = len(CATEGORIES) - 3  # minus the two labeled categories and blocked Exclusivity
+    items = build_items(triples, n_empty + 2, unanswerable_share=n_empty / (n_empty + 2), seed=0)
+    unanswerable = {i.tags[1] for i in items if not i.answerable}
+    assert len(unanswerable) == n_empty
+    assert "exclusivity" not in unanswerable
+    assert "insurance" in unanswerable
+
+
 def test_build_items_is_deterministic() -> None:
     a = build_items(_triples(), 8, 0.25, seed=5)
     assert a == build_items(_triples(), 8, 0.25, seed=5)
