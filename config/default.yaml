@@ -1,0 +1,34 @@
+# VaultMind default configuration.
+# Copy to config/local.yaml (gitignored) to override, or point VAULTMIND_CONFIG at another file.
+# Every retrieval/agent switch here is also an eval ablation knob.
+
+paths:
+  vault_dir: ./vault        # watched folder for your documents
+  data_dir: ./data          # LanceDB index + SQLite app state
+
+ollama:
+  host: http://127.0.0.1:11434
+  keep_alive: 30m           # keep models loaded between questions
+
+models:
+  llm: qwen3:14b
+  embedder: qwen3-embedding:0.6b
+  reranker: BAAI/bge-reranker-v2-m3
+  num_ctx: 16384            # Ollama's default is small and silently truncates context
+
+chunking:
+  child_tokens: 256         # small chunks are what we search over
+  parent_tokens: 1200       # larger enclosing section is what the LLM reads
+  overlap: 0.15
+
+retrieval:
+  hybrid: true              # vector + BM25 fused with RRF
+  candidates: 20            # retrieved before reranking
+  top_k: 5                  # passed to the generator
+  rerank: true
+  rerank_threshold: 0.3     # reranker score below this = chunk fails grading
+
+agent:
+  rewrite: true
+  max_rewrites: 2
+  groundedness_check: false
