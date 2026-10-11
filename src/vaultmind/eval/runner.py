@@ -84,6 +84,8 @@ class ItemResult:
     queries: list[str] = field(default_factory=list)  # every query searched, in order
     rewrites: int = 0  # rewrite rounds used
     node_ms: dict[str, float] = field(default_factory=dict)  # total time per graph node
+    unsupported: list[str] = field(default_factory=list)  # groundedness check: flagged claims
+    contradictions: list[str] = field(default_factory=list)  # "[a] claim | [b] claim"
 
 
 @dataclass(frozen=True)
@@ -202,6 +204,11 @@ def _agent_item(
         queries=list(result.queries),
         rewrites=result.rewrites,
         node_ms=node_ms,
+        unsupported=[c.claim for c in result.unsupported],
+        contradictions=[
+            f"[{c.source_a}] {c.claim_a} | [{c.source_b}] {c.claim_b}"
+            for c in result.contradictions
+        ],
     )
 
 

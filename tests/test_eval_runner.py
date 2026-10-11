@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from vaultmind.agent.baseline import NOT_FOUND, Source
-from vaultmind.agent.types import AgentResult, TraceEvent
+from vaultmind.agent.types import AgentResult, Contradiction, TraceEvent, UnsupportedClaim
 from vaultmind.core.config import (
     AgentConfig,
     ChunkingConfig,
@@ -729,3 +729,17 @@ def test_format_table_includes_agent_rows() -> None:
     assert rows["rewrite_rate"] == ["0.250"]
     assert rows["rewrite_recovered"] == ["0.500"]
     assert rows["analyze_p50_ms"] == ["812"]
+
+
+def test_loop_records_check_findings(
+    loop_cfg: Config, store: tuple[ChunkIndex, Registry], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = replace(
+        _agent_result("q"),
+        contradictions=[Contradiction("fee is 10", 1, "fee is 12", 2)],
+        unsupported=[UnsupportedClaim("it is free", (1,), "source says 10")],
+    )
+    monkeypatch.setattr(runner, "run_agent", FakeAgent({"q": result}))
+    [item] = _run(loop_cfg, store, [_item(question="q")], FakeLLM()).items
+    assert item.contradictions == ["[1] fee is 10 | [2] fee is 12"]
+    assert item.unsupported == ["it is free"]
