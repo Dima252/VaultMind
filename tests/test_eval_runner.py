@@ -7,8 +7,10 @@ from typing import Any
 
 import pytest
 
-from vaultmind.agent.baseline import NOT_FOUND
+from vaultmind.agent.baseline import NOT_FOUND, Source
+from vaultmind.agent.types import AgentResult, TraceEvent
 from vaultmind.core.config import (
+    AgentConfig,
     ChunkingConfig,
     Config,
     ModelsConfig,
@@ -34,7 +36,7 @@ from vaultmind.eval.runner import (
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
 
-from .fakes import FakeEmbedder, FakeLLM
+from .fakes import FakeEmbedder, FakeLLM, FakeReranker
 
 IN_VAULT = "0123456789abcdef"
 OUTSIDE = "fedcba9876543210"
@@ -92,6 +94,7 @@ def cfg(vault: Path, tmp_path: Path) -> Config:
     return Config(
         paths=PathsConfig(vault_dir=vault, data_dir=tmp_path / "data"),
         retrieval=RetrievalConfig(hybrid=False, rerank=False),
+        agent=AgentConfig(loop=False),
     )
 
 
@@ -178,6 +181,7 @@ def test_vault_dir_is_resolved(store: tuple[ChunkIndex, Registry], vault: Path) 
     cfg = Config(
         paths=PathsConfig(vault_dir=vault / "docs" / ".." / "."),
         retrieval=RetrievalConfig(hybrid=False, rerank=False),
+        agent=AgentConfig(loop=False),
     )
     report = _run(cfg, store, [_item()], FakeLLM(["ok"]))
     assert report.items[0].retrieved[0].file == "docs/manual.pdf"
@@ -359,6 +363,10 @@ def test_compute_metrics_hand_computed() -> None:
     # totals: 110, 220, 330, 40, 450 -> sorted 40, 110, 220, 330, 450
     assert m["total_p50_ms"] == pytest.approx(220.0)
     assert m["total_p95_ms"] == pytest.approx(426.0)  # 330 + 0.8 * 120
+    # linear results: no agent metrics
+    assert m["rewrite_rate"] is None
+    assert m["rewrite_recovered"] is None
+    assert m["analyze_p50_ms"] is None
 
 
 def test_compute_metrics_none_when_nothing_qualifies() -> None:
@@ -499,3 +507,225 @@ def test_format_table_non_ascii_names_and_empty() -> None:
     assert table.isascii()
     with pytest.raises(ValueError):
         format_table([])
+
+
+# --- agent loop (agent.loop on) ---------------------------------------------------------
+
+
+@pytest.fixture
+def loop_cfg(cfg: Config) -> Config:
+    return cfg.model_copy(update={"agent": AgentConfig(loop=True)})
+
+
+def _agent_result(
+    question: str,
+    answer: str = "Install with uv [1].",
+    *,
+    abstained: bool = False,
+    rewrites: int = 0,
+    trace: list[TraceEvent] | None = None,
+    sources: list[Source] | None = None,
+) -> AgentResult:
+    queries = [question] + [f"{question} (rewrite {n})" for n in range(1, rewrites + 1)]
+    return AgentResult(
+        question=question,
+        answer=answer,
+        sources=sources or [],
+        abstained=abstained,
+        queries=queries,
+        rewrites=rewrites,
+        trace=trace if trace is not None else [TraceEvent("analyze", 1.0)],
+    )
+
+
+class FakeAgent:
+    """Stands in for `run_agent`: scripted results by question, recording every call."""
+
+    def __init__(self, results: dict[str, AgentResult]) -> None:
+        self.results = results
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, question: str, cfg: Config, **kwargs: Any) -> AgentResult:
+        self.calls.append({"question": question, "cfg": cfg, **kwargs})
+        return self.results[question]
+
+
+def test_loop_runs_the_agent_with_history(
+    loop_cfg: Config,
+    store: tuple[ChunkIndex, Registry],
+    vault: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = [
+        Source(1, vault / "docs" / "manual.pdf", 2, ("Setup",), "Setup: install with uv.", 0.9),
+        Source(2, None, None, (), "Orphan text.", 0.4),
+    ]
+    agent = FakeAgent(
+        {
+            "follow-up?": _agent_result("follow-up?", "  It is uv [1].  ", sources=sources),
+            "single": _agent_result("single", NOT_FOUND, abstained=True, rewrites=2),
+        }
+    )
+    monkeypatch.setattr(runner, "run_agent", agent)
+    judged: list[str] = []
+
+    def fake_judge(question: str, reference: str, answer: str, *, llm: Any) -> JudgeResult:
+        judged.append(answer)
+        return JudgeResult(Verdict.CORRECT, "ok")
+
+    monkeypatch.setattr(runner, "judge", fake_judge)
+    reranker = FakeReranker()
+    history = [
+        {"role": "user", "content": "How do I install it?"},
+        {"role": "assistant", "content": "With uv [1]."},
+    ]
+    items = [_item(question="follow-up?", history=history), _item(question="single")]
+    llm = FakeLLM()
+    index, registry = store
+    report = _run(loop_cfg, store, items, llm, reranker=reranker, judge_llm=FakeLLM())
+
+    assert [c["question"] for c in agent.calls] == ["follow-up?", "single"]
+    first, second = agent.calls
+    assert first["history"] == history
+    assert second["history"] == []
+    assert first["cfg"] is loop_cfg
+    assert first["llm"] is llm and first["reranker"] is reranker
+    assert first["index"] is index and first["registry"] is registry
+    assert llm.calls == []  # the agent made every model call
+
+    answered, abstained = report.items
+    assert answered.answer == "It is uv [1]."  # stripped
+    assert not answered.abstained
+    assert answered.retrieved == [
+        RetrievedSource("docs/manual.pdf", 2, "Setup: install with uv.", 0.9),
+        RetrievedSource("", None, "Orphan text.", 0.4),
+    ]
+    assert answered.queries == ["follow-up?"] and answered.rewrites == 0
+    assert answered.verdict == "correct"
+    assert judged == ["It is uv [1]."]  # abstentions are not sent to the judge
+    assert abstained.abstained and abstained.verdict == "incorrect"
+    assert abstained.queries == ["single", "single (rewrite 1)", "single (rewrite 2)"]
+    assert abstained.rewrites == 2
+
+
+def test_loop_timing_split(
+    loop_cfg: Config, store: tuple[ChunkIndex, Registry], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trace = [
+        TraceEvent("analyze", 50.0),
+        TraceEvent("retrieve", 20.0),
+        TraceEvent("grade", 30.0),
+        TraceEvent("rewrite", 40.0),
+        TraceEvent("retrieve", 25.0),
+        TraceEvent("grade", 15.0),
+        TraceEvent("generate", 600.0),
+    ]
+    direct = [TraceEvent("analyze", 45.0), TraceEvent("direct", 300.0)]
+    agent = FakeAgent(
+        {"a": _agent_result("a", rewrites=1, trace=trace), "b": _agent_result("b", trace=direct)}
+    )
+    monkeypatch.setattr(runner, "run_agent", agent)
+    ticks = iter([0.0, 1.0, 5.0, 5.4])  # item a: 1000 ms wall time, item b: 400 ms
+    monkeypatch.setattr(runner, "time", SimpleNamespace(perf_counter=lambda: next(ticks)))
+
+    report = _run(loop_cfg, store, [_item(question="a"), _item(question="b")], FakeLLM())
+    a, b = report.items
+    assert a.generation_ms == pytest.approx(600.0)
+    assert a.retrieval_ms == pytest.approx(400.0)  # analyze, rewrite and overhead included
+    assert a.node_ms == {
+        "analyze": 50.0,
+        "retrieve": 45.0,
+        "grade": 45.0,
+        "rewrite": 40.0,
+        "generate": 600.0,
+    }
+    assert b.generation_ms == pytest.approx(300.0)  # the direct answer counts as generation
+    assert b.retrieval_ms == pytest.approx(100.0)
+    assert report.metrics["total_p50_ms"] == pytest.approx(700.0)  # wall times 1000 and 400
+    assert report.metrics["analyze_p50_ms"] == pytest.approx(47.5)
+    assert report.metrics["rewrite_rate"] == pytest.approx(0.5)
+    assert report.metrics["rewrite_recovered"] == pytest.approx(1.0)
+
+
+def test_loop_off_never_calls_the_agent(
+    cfg: Config, store: tuple[ChunkIndex, Registry], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_agent(*args: Any, **kwargs: Any) -> AgentResult:
+        raise AssertionError("run_agent must not be called with agent.loop off")
+
+    monkeypatch.setattr(runner, "run_agent", no_agent)
+    item = _item(history=[{"role": "user", "content": "earlier turn"}])
+    llm = FakeLLM(["Install with uv [1]."])
+    [result] = _run(cfg, store, [item], llm).items
+    assert len(llm.calls) == 1
+    assert "earlier turn" not in str(llm.calls[0])  # the linear path ignores history
+    assert result.queries == [] and result.rewrites == 0 and result.node_ms == {}
+
+
+def test_agent_metrics_hand_computed() -> None:
+    items = [_item(), _item(), _item(), _item(**UNANSWERABLE)]
+    results = [
+        replace(_result(0, []), rewrites=0, node_ms={"analyze": 10.0, "generate": 100.0}),
+        replace(_result(1, []), rewrites=1, node_ms={"analyze": 30.0, "rewrite": 5.0}),
+        replace(
+            _result(2, [], NOT_FOUND, abstained=True),
+            rewrites=2,
+            node_ms={"analyze": 20.0, "not_found": 1.0},
+        ),
+        replace(_result(3, [], NOT_FOUND, abstained=True), rewrites=3, node_ms={"direct": 4.0}),
+    ]
+    m = compute_metrics(items, results)
+    assert list(m) == list(METRIC_NAMES)
+    assert m["rewrite_rate"] == pytest.approx(3 / 4)
+    assert m["rewrite_recovered"] == pytest.approx(1 / 3)  # only item 1 ended answered
+    assert m["analyze_p50_ms"] == pytest.approx(20.0)  # item 3 has no analyze time
+
+    no_rewrites = [replace(r, rewrites=0) for r in results]
+    m = compute_metrics(items, no_rewrites)
+    assert m["rewrite_rate"] == 0.0
+    assert m["rewrite_recovered"] is None  # nothing was rewritten
+
+    no_analyze = [replace(r, node_ms={"direct": 1.0}) for r in results]
+    assert compute_metrics(items, no_analyze)["analyze_p50_ms"] is None
+
+
+def test_agent_fields_round_trip(tmp_path: Path) -> None:
+    item = replace(
+        _result(0, [("a.pdf", 1, "t")]),
+        queries=["q", "q2"],
+        rewrites=1,
+        node_ms={"analyze": 1.5, "generate": 9.0},
+    )
+    report = RunReport("loop", "tiny", [item], dict.fromkeys(METRIC_NAMES))
+    assert load_results(save_report(report, tmp_path)) == [item]
+
+
+def test_load_results_reads_old_format(tmp_path: Path) -> None:
+    old = {  # a Phase 3 results line: no queries / rewrites / node_ms
+        "index": 0,
+        "question": "q0",
+        "answerable": True,
+        "tags": [],
+        "retrieved": [{"file": "a.pdf", "page": 1, "text": "t", "score": 0.5}],
+        "answer": "an answer",
+        "abstained": False,
+        "retrieval_ms": 10.0,
+        "generation_ms": 100.0,
+        "verdict": None,
+        "judge_reason": None,
+    }
+    path = tmp_path / "old.jsonl"
+    path.write_text(json.dumps(old) + "\n" + json.dumps({"metrics": {}}) + "\n", encoding="utf-8")
+    [result] = load_results(path)
+    assert result == _result(0, [("a.pdf", 1, "t")])
+    assert result.queries == [] and result.rewrites == 0 and result.node_ms == {}
+
+
+def test_format_table_includes_agent_rows() -> None:
+    metrics: dict[str, float | None] = dict.fromkeys(METRIC_NAMES)
+    metrics.update({"rewrite_rate": 0.25, "rewrite_recovered": 0.5, "analyze_p50_ms": 812.4})
+    table = format_table([RunReport("loop", "cuad", [], metrics)])
+    rows = {line.split()[0]: line.split()[1:] for line in table.split("\n")[2:]}
+    assert rows["rewrite_rate"] == ["0.250"]
+    assert rows["rewrite_recovered"] == ["0.500"]
+    assert rows["analyze_p50_ms"] == ["812"]
