@@ -623,3 +623,9 @@ def test_date_diff(vault: Vault) -> None:
     assert out.text.endswith("-45 days (the second date is earlier).")
     with pytest.raises(ToolError, match="Can't read 'next week' as a date"):
         run(vault.ctx, "date_diff", a="next week", b="2026-03-01")
+
+
+def test_calc_rejects_expressions_too_long_to_walk() -> None:
+    with pytest.raises(ToolError, match="too long"):
+        calculate("+".join(["1"] * 1500))
+    assert calculate("+".join(["1"] * 200)) == 200

@@ -668,6 +668,7 @@ def _row(cells: Sequence[str]) -> str:
 # --- calc and dates ---------------------------------------------------------------------
 
 MAX_MAGNITUDE = 1e100  # larger numbers are an error, not a computation
+MAX_EXPRESSION_CHARS = 500  # keeps the AST walk far from Python's recursion limit
 _BINARY: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -683,6 +684,8 @@ _CALC_HELP = "calc takes numbers, + - * / // % **, parentheses and round, min, m
 
 def calculate(expression: str) -> int | float:
     """Evaluate arithmetic by walking its AST (never `eval`). Raises `ToolError`."""
+    if len(expression) > MAX_EXPRESSION_CHARS:
+        raise ToolError(f"The expression is too long (over {MAX_EXPRESSION_CHARS} characters).")
     text = expression.replace("^", "**").replace("\u00d7", "*").replace("\u00f7", "/")
     try:
         tree = ast.parse(text.strip(), mode="eval")
