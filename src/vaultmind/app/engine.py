@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterator
+from contextlib import nullcontext
 
 from vaultmind.agent.graph import stream_agent
 from vaultmind.agent.types import AgentResult
 from vaultmind.core.config import Config
+from vaultmind.core.models import file_id_for
 from vaultmind.core.providers import LLM, Embedder, Reranker
+from vaultmind.ingest.enrich import CardEvent, Enricher
 from vaultmind.ingest.queue import IngestQueue, JobEvent
 from vaultmind.ingest.watcher import VaultWatcher
+from vaultmind.store.cards import CardStore
 from vaultmind.store.chats import ChatMessage, ChatStore
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
@@ -32,6 +36,7 @@ class Engine:
         registry: Registry,
         traces: TraceStore,
         chats: ChatStore,
+        cards: CardStore | None = None,
     ) -> None:
         self.cfg = cfg
         self.llm = llm
@@ -41,7 +46,9 @@ class Engine:
         self.registry = registry
         self.traces = traces
         self.chats = chats
+        self.cards = cards  # None: no document cards (tests, or a store-less setup)
         self.queue: IngestQueue | None = None
+        self.enricher: Enricher | None = None
         self.watcher: VaultWatcher | None = None
         self._ask_lock = threading.Lock()
 
@@ -67,6 +74,7 @@ class Engine:
             registry=Registry(db),
             traces=TraceStore(db),
             chats=ChatStore(db),
+            cards=CardStore(db),
         )
 
     def warm_up(self) -> None:
@@ -78,8 +86,9 @@ class Engine:
     def ask(self, chat_id: str, question: str) -> Iterator[str | ChatMessage]:
         """Answer in the context of a chat: yield answer tokens, then the stored assistant
         message. The run and the exchange are saved before it's yielded. One question at a
-        time; on an error nothing is saved."""
-        with self._ask_lock:
+        time; on an error nothing is saved. Card writing waits while it runs."""
+        paused = self.enricher.paused() if self.enricher is not None else nullcontext()
+        with self._ask_lock, paused:
             result: AgentResult | None = None
             events = stream_agent(
                 question,
@@ -102,16 +111,32 @@ class Engine:
             _, answer = self.chats.add_exchange(chat_id, result, run_id)
         yield answer
 
-    def start_ingest(self, on_event: Callable[[JobEvent], None] | None = None) -> None:
-        """Start background ingestion: catch up with the vault, then watch it (`ingest.watch`)."""
+    def start_ingest(
+        self,
+        on_event: Callable[[JobEvent], None] | None = None,
+        on_card: Callable[[CardEvent], None] | None = None,
+    ) -> None:
+        """Start background ingestion: catch up with the vault, then watch it (`ingest.watch`).
+        With `ingest.enrich`, every file that becomes ready also gets its document card."""
         if self.queue is not None:
             return
+        if self.cfg.ingest.enrich and self.cards is not None:
+            self.enricher = Enricher(
+                self.cfg,
+                llm=self.llm,
+                index=self.index,
+                registry=self.registry,
+                cards=self.cards,
+                on_event=on_card,
+            )
+            self.enricher.start()
+            self.enricher.scan()
         self.queue = IngestQueue(
             self.cfg,
             embedder=self.embedder,
             index=self.index,
             registry=self.registry,
-            on_event=on_event,
+            on_event=self._chain(on_event),
         )
         self.queue.start()
         self.queue.scan()
@@ -122,14 +147,34 @@ class Engine:
             )
             self.watcher.start()
 
+    def _chain(
+        self, on_event: Callable[[JobEvent], None] | None
+    ) -> Callable[[JobEvent], None] | None:
+        """The queue's callback: pass events on, and queue a card for each ready file."""
+        enricher = self.enricher
+        if enricher is None:
+            return on_event
+
+        def forward(event: JobEvent) -> None:
+            if event.state == "ready":
+                enricher.submit(file_id_for(event.path))
+            if on_event is not None:
+                on_event(event)
+
+        return forward
+
     def close(self) -> None:
         """Stop background work and close the stores. Idempotent."""
+        if self.enricher is not None:
+            self.enricher.stop()
+            self.enricher = None
         if self.watcher is not None:
             self.watcher.stop()
             self.watcher = None
         if self.queue is not None:
             self.queue.stop()
             self.queue = None
-        for store in (self.chats, self.traces, self.registry):
-            store.close()
+        for store in (self.chats, self.traces, self.registry, self.cards):
+            if store is not None:
+                store.close()
         self.index.close()

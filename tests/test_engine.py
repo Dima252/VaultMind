@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,7 +14,9 @@ from vaultmind.app.engine import Engine
 from vaultmind.core.config import Config
 from vaultmind.core.ollama import OllamaUnavailableError
 from vaultmind.core.providers import Message
+from vaultmind.ingest.enrich import CARD_SCHEMA, SECTIONS_SCHEMA, CardEvent
 from vaultmind.ingest.pipeline import ingest_path
+from vaultmind.store.cards import CardStore
 from vaultmind.store.chats import ChatMessage, ChatStore
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
@@ -116,3 +120,72 @@ def test_close_is_idempotent(make_engine: MakeEngine) -> None:
     engine = make_engine(LLM())
     engine.close()
     engine.close()
+
+
+class CardLLM(LLM):
+    """Answers the card prompts by schema, everything else from the queue."""
+
+    def generate(self, messages: Sequence[Message], *, schema: dict[str, Any] | None = None) -> str:
+        if schema is SECTIONS_SCHEMA:
+            return json.dumps({"summaries": [{"section": 0, "summary": "Fees and due dates."}]})
+        if schema is CARD_SCHEMA:
+            return json.dumps(
+                {
+                    "title": "Fees",
+                    "doc_type": "policy",
+                    "language": "en",
+                    "summary": "When payment is due.",
+                    "outline": ["Fees"],
+                    "entities": [],
+                    "dates": [{"text": "sixty days", "what": "payment due"}],
+                }
+            )
+        return super().generate(messages, schema=schema)
+
+
+def _engine_with_cards(tmp_path: Path, llm: FakeLLM, *, enrich: bool) -> Engine:
+    cfg = _config(tmp_path).model_copy(deep=True)
+    cfg.ingest.enrich = enrich
+    cfg.ingest.watch = False
+    cfg.paths.vault_dir.mkdir()
+    (cfg.paths.vault_dir / "fees.md").write_text("# Fees\n\nPayment is due in sixty days.\n")
+    db = cfg.paths.data_dir / "vaultmind.sqlite"
+    embedder = FakeEmbedder()
+    return Engine(
+        cfg,
+        llm=llm,
+        embedder=embedder,
+        reranker=None,
+        index=ChunkIndex(cfg.paths.data_dir / "index", embedder_name=embedder.model_name),
+        registry=Registry(db),
+        traces=TraceStore(db),
+        chats=ChatStore(db),
+        cards=CardStore(db),
+    )
+
+
+def test_ready_files_get_a_document_card(tmp_path: Path) -> None:
+    events: list[CardEvent] = []
+    engine = _engine_with_cards(tmp_path, CardLLM(), enrich=True)
+    try:
+        engine.start_ingest(on_card=events.append)
+        assert engine.queue is not None and engine.queue.wait_idle(10)
+        assert engine.enricher is not None and engine.enricher.wait_idle(10)
+        (record,) = engine.registry.all()
+        assert engine.cards is not None
+        card = engine.cards.latest(record.sha256)
+        assert card is not None and card.doc_type == "policy"
+        assert [e.status for e in events] == ["writing", "ready"]
+    finally:
+        engine.close()
+    assert engine.enricher is None
+
+
+def test_no_cards_when_enrich_is_off(tmp_path: Path) -> None:
+    engine = _engine_with_cards(tmp_path, CardLLM(), enrich=False)
+    try:
+        engine.start_ingest()
+        assert engine.queue is not None and engine.queue.wait_idle(10)
+        assert engine.enricher is None
+    finally:
+        engine.close()
