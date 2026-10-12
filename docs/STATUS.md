@@ -17,7 +17,7 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 
 **Next task:** Phase 5, the desktop app (NiceGUI). The engine is ready for it: `agent.graph.stream_agent` streams tokens and returns an `AgentResult` with sources, warnings and the trace. Keep the reranker and models loaded for the app's lifetime (loading the reranker takes ~7 s).
 
-**Waiting on the user:** check the 27 reference answers in `eval/datasets/personal.jsonl` (readable copy: `eval/datasets/personal_review.md`; both gitignored). The personal-set numbers in RESULTS.md assume they are right.
+The 27 personal reference answers were verified against the source pages (2026-10-12); none needed changing, so the personal-set numbers in RESULTS.md stand.
 
 ## Honest assessment (2026-10-12, end of Phase 4)
 
@@ -30,7 +30,7 @@ This is the starting point for anyone (human or agent) continuing the work. Read
   - Every answer has a stored trace you can inspect.
 - **Quality today:**
   - CUAD (legal contracts): ~0.80 of answers correct, ~0.86 abstention accuracy.
-  - Your own documents: ~0.91 correct, pending your check of the reference answers.
+  - Your own documents: ~0.91 correct (reference answers verified). With 27 items, one question is ~4 points.
   - Median answer time is ~1.5 s on an RTX 5070 Ti.
 - **Where it still fails:**
   1. The model refuses when a clause is worded differently from the question (a "most favored nation" clause written as "on terms not less favorable"), even with the passage in front of it.
@@ -156,7 +156,7 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
 ## What's left
 
 ### Open items from earlier phases
-- [ ] **User:** verify the 27 reference answers in `eval/datasets/personal.jsonl` (see `personal_review.md`), then re-score.
+- [x] Verify the 27 reference answers in `eval/datasets/personal.jsonl`. Done 2026-10-12, no changes needed. Two multi-hop items span two files but list only one `source_file`, so file-level recall slightly understates them.
 - [ ] Harder follow-up (pronoun-only) and multi-hop questions. Today's 4 follow-ups are answered correctly even without history.
 - [ ] A stronger injection set, with payloads in the same chunk as the clause asked about. The current set is at 8/8 even without the guard.
 - [ ] A judge built on a key-facts checklist, plus `eval run --repeat N`, so ~5-point effects can be decided.

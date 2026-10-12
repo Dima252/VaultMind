@@ -27,7 +27,7 @@ The order matters. A plain baseline and the eval harness come **before** any of 
 - [x] Install Ollama, then `ollama pull qwen3:14b` and `ollama pull qwen3-embedding:0.6b`
 - [x] `uv run vaultmind doctor` passes
 - [x] **Main eval corpus: CUAD.** `vaultmind eval import-cuad` copies a seeded subset of [CUAD](https://www.atticusprojectai.org/cuad) contracts (CC BY 4.0, lawyer-labeled clause spans) into `vault/cuad/` and writes `eval/datasets/cuad.jsonl`. The zip lives in `eval/corpora/cuad/` (gitignored). Default: 25 contracts, 60 questions, 20% unanswerable, seed 0.
-- [x] **Mixed-type supplement:** (2026-10-12: 12 of the user's own PDFs in `vault/personal/`, mostly Hebrew course material, plus 27 drafted questions in the gitignored `eval/datasets/personal.jsonl`, pending the user's check.) 5–10 of your own documents (at least one PDF with tables, slides exported to PDF, Markdown notes) to cover the parsers CUAD doesn't exercise (it's plain text only), plus a few hand-written questions about them.
+- [x] **Mixed-type supplement:** (2026-10-12: 12 of the user's own PDFs in `vault/personal/`, mostly Hebrew course material, plus 27 questions in the gitignored `eval/datasets/personal.jsonl`, reference answers verified against the source pages.) 5–10 of your own documents (at least one PDF with tables, slides exported to PDF, Markdown notes) to cover the parsers CUAD doesn't exercise (it's plain text only), plus a few hand-written questions about them.
 
 **Done when:** `doctor` is all green and the corpus is sitting in `vault/`.
 
