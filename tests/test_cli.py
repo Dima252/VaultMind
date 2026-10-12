@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from vaultmind import cli
 from vaultmind.agent.baseline import NOT_FOUND, Source
+from vaultmind.agent.trace_text import format_trace
 from vaultmind.agent.types import AgentResult, Contradiction, TraceEvent, UnsupportedClaim
 from vaultmind.core import ollama
 from vaultmind.core.config import load_config
@@ -301,7 +302,7 @@ def test_trace_empty_and_unknown(tmp_path: Path) -> None:
 
 
 def test_format_trace_tolerates_odd_data() -> None:
-    lines = cli.format_trace(
+    lines = format_trace(
         [
             TraceEvent("custom_node", 1.0, {"k": "v"}),
             TraceEvent("grade", 2.0, {"scores": [{"no_score": 1}]}),  # malformed: falls back

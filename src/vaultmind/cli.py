@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 import yaml
@@ -16,7 +15,7 @@ from vaultmind.core.config import Config, load_config, resolve_config_path
 
 if TYPE_CHECKING:
     from vaultmind.agent.baseline import Source
-    from vaultmind.agent.types import AgentResult, TraceEvent
+    from vaultmind.agent.types import AgentResult
     from vaultmind.core.providers import LLM, Embedder, Message, Reranker
     from vaultmind.store.index import ChunkIndex
     from vaultmind.store.registry import Registry
@@ -184,6 +183,22 @@ def ingest(
     )
 
 
+@app.command()
+def ui(
+    browser: Annotated[
+        bool, typer.Option("--browser", help="Open in the default browser, not a native window.")
+    ] = False,
+    config_path: ConfigOption = None,
+) -> None:
+    """Open the desktop app (served on 127.0.0.1 only)."""
+    from vaultmind.ui.app import main
+
+    cfg = load_config(config_path)
+    if browser:
+        cfg = cfg.model_copy(update={"ui": cfg.ui.model_copy(update={"native": False})})
+    main(cfg, resolve_config_path(config_path))
+
+
 def stream_agent(
     question: str,
     cfg: Config,
@@ -261,6 +276,8 @@ def ask(
     run_id = _save_run(cfg, result)
     _print_agent_sources(result)
     if show_trace:
+        from vaultmind.agent.trace_text import format_trace
+
         typer.echo()
         typer.echo("Trace:")
         for line in format_trace(result.trace):
@@ -346,73 +363,6 @@ def _print_agent_sources(result: AgentResult) -> None:
 # --- traces ---------------------------------------------------------------------------
 
 
-def _short(text: object, limit: int = 80) -> str:
-    """`text` on one line, quoted, cut to about `limit` characters."""
-    flat = " ".join(str(text).split())
-    if len(flat) > limit:
-        flat = flat[: limit - 3] + "..."
-    return f'"{flat}"'
-
-
-def _compact(data: object) -> str:
-    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-
-
-def _summarize(node: str, data: dict[str, Any]) -> str:
-    """One-line summary of a node's trace data (keys per `agent.types`; extras ignored)."""
-    if node == "analyze":
-        parts = [f"query {_short(data.get('standalone_query', ''))}"]
-        variants = data.get("variants") or []
-        if variants:
-            parts.append("variants " + " | ".join(_short(v, 50) for v in variants))
-        if data.get("needs_retrieval") is False:
-            parts.append("no retrieval needed")
-        return ", ".join(parts)
-    if node == "retrieve":
-        queries = data.get("queries") or []
-        return f"{len(queries)} queries -> {data.get('candidates', '?')} candidates"
-    if node == "grade":
-        scores = data.get("scores") or []
-        threshold = data.get("threshold")
-        limit = "no threshold" if threshold is None else f"threshold {float(threshold):.2f}"
-        top = sorted((float(s["score"]) for s in scores), reverse=True)[:3]
-        text = f"{data.get('passed', '?')}/{len(scores)} passed ({limit})"
-        return text + (", top " + " ".join(f"{v:.2f}" for v in top) if top else "")
-    if node == "rewrite":
-        return f"attempt {data.get('attempt', '?')}: {_short(data.get('query', ''))}"
-    if node == "contradictions":
-        found = data.get("found") or []
-        pairs = " ".join(f"[{c.get('source_a')}] vs [{c.get('source_b')}]" for c in found)
-        return f"{len(found)} found" + (f": {pairs}" if pairs else "")
-    if node == "generate":
-        shown = "".join(f"[{n}]" for n in data.get("sources") or []) or "none"
-        return f"sources {shown}" + (", abstained" if data.get("abstained") else "")
-    if node == "not_found":
-        closest = data.get("closest") or []
-        return "closest: " + ("; ".join(str(c) for c in closest) or "none")
-    if node == "groundedness":
-        return f"{len(data.get('unsupported') or [])} unsupported claim(s)"
-    if node == "direct":
-        return f"no retrieval: {_short(data.get('reason', ''))}"
-    return _compact(data)
-
-
-def format_trace(events: Sequence[TraceEvent]) -> list[str]:
-    """One line per event (node, duration, summary of its data), then the total."""
-    lines: list[str] = []
-    for e in events:
-        try:
-            summary = _summarize(e.node, e.data)
-        except (AttributeError, KeyError, TypeError, ValueError):  # unexpected data shape
-            summary = _compact(e.data)
-        if "error" in e.data:
-            summary += f" [error: {e.data['error']}]"
-        lines.append(f"  {e.node:<14} {e.duration_ms:>7.0f} ms  {summary}".rstrip())
-    total = sum(e.duration_ms for e in events)
-    lines.append(f"  {'total':<14} {total:>7.0f} ms")
-    return lines
-
-
 @app.command()
 def trace(
     run_id: Annotated[
@@ -422,6 +372,7 @@ def trace(
     config_path: ConfigOption = None,
 ) -> None:
     """Show a stored agent run with its trace, or list the most recent runs."""
+    from vaultmind.agent.trace_text import format_trace
     from vaultmind.store.traces import TraceStore
 
     cfg = load_config(config_path)
@@ -448,10 +399,12 @@ def trace(
 
 
 def _list_runs(runs: Sequence[StoredRun]) -> None:
+    from vaultmind.agent.trace_text import short
+
     if not runs:
         typer.echo('No runs stored yet. Ask something: vaultmind ask "..."')
     for run in runs:
-        typer.echo(f"{run.id}  {_local_time(run)}  {_outcome(run):<9}  {_short(run.question)}")
+        typer.echo(f"{run.id}  {_local_time(run)}  {_outcome(run):<9}  {short(run.question)}")
 
 
 def _local_time(run: StoredRun) -> str:
