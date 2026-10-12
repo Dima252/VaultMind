@@ -743,3 +743,20 @@ def test_loop_records_check_findings(
     [item] = _run(loop_cfg, store, [_item(question="q")], FakeLLM()).items
     assert item.contradictions == ["[1] fee is 10 | [2] fee is 12"]
     assert item.unsupported == ["it is free"]
+
+
+def test_not_found_closest_matches_are_not_scored_as_retrieved(
+    loop_cfg: Config, store: tuple[ChunkIndex, Registry], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closest = [Source(1, None, None, (), "a near miss", 0.1)]
+    result = _agent_result(
+        "q",
+        NOT_FOUND,
+        abstained=True,
+        sources=closest,
+        trace=[TraceEvent("grade", 1.0), TraceEvent("not_found", 0.0)],
+    )
+    monkeypatch.setattr(runner, "run_agent", FakeAgent({"q": result}))
+    [item] = _run(loop_cfg, store, [_item(question="q")], FakeLLM()).items
+    assert item.retrieved == []
+    assert item.abstained

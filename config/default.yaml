@@ -32,8 +32,8 @@ retrieval:
 
 agent:
   loop: true                  # corrective graph (analyze -> retrieve -> grade -> rewrite/generate); false = linear
-  query_variants: 2           # extra phrasings of the question searched alongside it
-  rewrite: true               # when nothing passes grading, rewrite the query and search again
+  query_variants: 0           # extra phrasings searched alongside the question (2: +recall, +1.2 s)
+  rewrite: false              # when nothing passes grading, rewrite the query and search again
   max_rewrites: 2
   injection_guard: true       # passages go in delimited data blocks; instruction-like text is flagged
   detect_contradictions: false  # one LLM call: report conflicting claims across files, cite both

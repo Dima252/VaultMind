@@ -1,0 +1,4 @@
+# Phase 4 first default: loop with 2 query variants and up to 2 rewrites.
+agent:
+  query_variants: 2
+  rewrite: true

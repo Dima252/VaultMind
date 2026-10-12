@@ -189,12 +189,15 @@ def _agent_item(
     for event in result.trace:
         node_ms[event.node] = node_ms.get(event.node, 0.0) + event.duration_ms
     verdict, reason = _grade(item, answer, result.abstained, judge_llm)
+    # A not-found answer lists its closest matches as sources, but none passed grading. Score
+    # retrieval on graded passages only, as the linear pipeline does.
+    graded = [] if "not_found" in node_ms else result.sources
     return ItemResult(
         index=i,
         question=item.question,
         answerable=item.answerable,
         tags=list(item.tags),
-        retrieved=_to_retrieved(result.sources, vault_dir),
+        retrieved=_to_retrieved(graded, vault_dir),
         answer=answer,
         abstained=result.abstained,
         retrieval_ms=max(total_ms - generation_ms, 0.0),

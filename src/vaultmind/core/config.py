@@ -54,8 +54,8 @@ class RetrievalConfig(_Section):
 
 class AgentConfig(_Section):
     loop: bool = True
-    query_variants: int = Field(default=2, ge=0)
-    rewrite: bool = True
+    query_variants: int = Field(default=0, ge=0)  # measured: +recall, no answer gain, +1.2 s
+    rewrite: bool = False  # measured: recovered 0 of 4 rewritten questions (RESULTS.md)
     max_rewrites: int = Field(default=2, ge=0)
     injection_guard: bool = True
     detect_contradictions: bool = False
