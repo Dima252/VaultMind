@@ -32,7 +32,8 @@ Add dependencies with `uv add <pkg>` (dev: `uv add --dev`), never by hand-editin
 - **Agent tools are plain Python functions** (`agent/tools.py`) over the index, registry and document cards: no MCP, no network. Read-only by default; any write needs human approval; the agent never gets a delete tool. Tool observations go through the injection guard.
 - **Always pass `num_ctx`** to Ollama; its default silently truncates context.
 - Storage: LanceDB holds chunks/vectors/FTS only; SQLite holds files, jobs, chats, traces (and, from Phase 5.5, document cards and agent checkpoints).
-- Lookup answers cite only graded passages. When nothing passes, say "not found in your documents" rather than generating anyway. Whole-document tasks (summaries, comparisons) citing the sections they read is a pending decision (docs/STATUS.md).
+- Lookup answers cite only graded passages. When nothing passes, say "not found in your documents" rather than generating anyway. Whole-document tasks (summarize, compare, extract, generate) cite the sections and pages a tool actually read. A request about a document that doesn't exist still gets "not found" (decided 2026-10-12).
+- Answers come only from the user's documents. An optional, clearly labeled world-knowledge mode (`agent.world_knowledge`, off by default) may answer from the local model's own knowledge.
 
 ## Parallel agents
 

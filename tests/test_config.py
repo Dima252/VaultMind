@@ -4,9 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from vaultmind.core.config import DEFAULT_CONFIG, Config, load_config
-from vaultmind.core.providers import LLM, Embedder, Reranker
+from vaultmind.core.providers import LLM, AssistantTurn, Embedder, Reranker, ToolCall, ToolSpec
 
-from .fakes import FakeEmbedder, FakeLLM, FakeReranker
+from .fakes import FakeEmbedder, FakeLLM, FakeReranker, tool_turn
 
 
 def test_default_yaml_matches_builtin_defaults() -> None:
@@ -43,3 +43,14 @@ def test_fakes_satisfy_protocols() -> None:
     assert embedder.embed(["a"]) == embedder.embed(["a"])
     assert reranker.score("local rag", ["local rag app", "cooking"]) == [1.0, 0.0]
     assert llm.generate([{"role": "user", "content": "hi"}]) == ""
+    assert llm.chat([{"role": "user", "content": "hi"}]).content == ""
+
+
+def test_fake_llm_plays_back_scripted_turns() -> None:
+    llm = FakeLLM(turns=[tool_turn("search", query="x"), "Done."])
+    spec = ToolSpec("search", "Search.", {"type": "object"})
+    first = llm.chat([{"role": "user", "content": "q"}], tools=[spec], think=True)
+    assert first.tool_calls == (ToolCall("search", {"query": "x"}),)
+    assert llm.chat([]).content == "Done."
+    assert llm.chat([]) == AssistantTurn("")
+    assert llm.chat_calls[0][1:] == ([spec], True)

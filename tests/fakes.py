@@ -7,17 +7,28 @@ import json
 from collections.abc import Iterator, Sequence
 from typing import Any
 
-from vaultmind.core.providers import Message
+from vaultmind.core.providers import AssistantTurn, Message, ToolCall, ToolSpec
 
 
 class FakeLLM:
-    """Returns queued responses in order; with a schema, returns JSON-encoded dicts."""
+    """Returns queued responses in order; with a schema, returns JSON-encoded dicts.
+
+    `chat` plays back `turns` (a str is a text-only turn), so a test can script tool calls:
+    `FakeLLM(turns=[AssistantTurn("", (ToolCall("list_documents"),)), "Done."])`.
+    """
 
     model_name = "fake-llm"
 
-    def __init__(self, responses: Sequence[str | dict[str, Any]] = ()) -> None:
+    def __init__(
+        self,
+        responses: Sequence[str | dict[str, Any]] = (),
+        *,
+        turns: Sequence[str | AssistantTurn] = (),
+    ) -> None:
         self._responses = list(responses)
+        self._turns = list(turns)
         self.calls: list[Sequence[Message]] = []
+        self.chat_calls: list[tuple[Sequence[Message], Sequence[ToolSpec], bool | None]] = []
 
     def generate(self, messages: Sequence[Message], *, schema: dict[str, Any] | None = None) -> str:
         self.calls.append(messages)
@@ -26,6 +37,22 @@ class FakeLLM:
 
     def stream(self, messages: Sequence[Message]) -> Iterator[str]:
         yield from self.generate(messages).split(" ")
+
+    def chat(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        think: bool | None = None,
+    ) -> AssistantTurn:
+        self.chat_calls.append((list(messages), list(tools), think))
+        turn = self._turns.pop(0) if self._turns else ""
+        return AssistantTurn(turn) if isinstance(turn, str) else turn
+
+
+def tool_turn(name: str, **arguments: Any) -> AssistantTurn:
+    """A scripted assistant turn that makes one tool call."""
+    return AssistantTurn("", (ToolCall(name, arguments),))
 
 
 class FakeEmbedder:

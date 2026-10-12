@@ -10,7 +10,7 @@ import pytest
 
 from vaultmind.core.config import Config
 from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM, OllamaUnavailableError
-from vaultmind.core.providers import LLM, Embedder, Message
+from vaultmind.core.providers import LLM, AssistantTurn, Embedder, Message, ToolCall, ToolSpec
 
 HOST = "http://127.0.0.1:11434"
 MESSAGES: list[Message] = [{"role": "user", "content": "hi"}]
@@ -189,3 +189,83 @@ def test_other_errors_propagate() -> None:
     client = FakeClient(error=ollama.ResponseError("bad request", 400))
     with pytest.raises(ollama.ResponseError):
         make_llm(client).generate(MESSAGES)
+
+
+class ToolClient(FakeClient):
+    """Answers every non-streaming chat with the given raw message."""
+
+    def __init__(self, message: dict[str, Any]) -> None:
+        super().__init__()
+        self.message = message
+
+    def chat(self, **kwargs: Any) -> Any:
+        self.chat_calls.append(kwargs)
+        return {"message": self.message}
+
+
+SPEC = ToolSpec("search", "Search the documents.", {"type": "object", "properties": {}})
+
+
+def test_chat_sends_tools_in_ollama_format_and_parses_calls() -> None:
+    client = ToolClient(
+        {
+            "role": "assistant",
+            "content": "",
+            "thinking": "I should search.",
+            "tool_calls": [
+                {"function": {"name": "search", "arguments": {"query": "deadline"}}},
+                {"function": {"name": "calc", "arguments": '{"expr": "1+1"}'}},
+                {"function": {"name": "calc", "arguments": "not json"}},
+            ],
+        }
+    )
+    turn = make_llm(client).chat(MESSAGES, tools=[SPEC])
+    assert turn == AssistantTurn(
+        "",
+        (
+            ToolCall("search", {"query": "deadline"}),
+            ToolCall("calc", {"expr": "1+1"}),
+            ToolCall("calc", {"_unparsed": "not json"}),
+        ),
+        "I should search.",
+    )
+    (call,) = client.chat_calls
+    assert call["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": SPEC.description,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    assert call["options"] == {"num_ctx": 8192}
+    assert call["keep_alive"] == "5m"
+    assert call["think"] is False
+
+
+def test_chat_without_tools_sends_none_and_think_overrides_default() -> None:
+    client = ToolClient({"role": "assistant", "content": "<think>x</think>Hello."})
+    turn = make_llm(client).chat(MESSAGES, think=True)
+    assert turn == AssistantTurn("Hello.")
+    assert client.chat_calls[0]["tools"] is None
+    assert client.chat_calls[0]["think"] is True
+
+
+def test_tool_messages_are_sent_in_ollama_format() -> None:
+    history: list[Message] = [
+        {"role": "user", "content": "find it"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [ToolCall("search", {"query": "x"}).as_data()],
+        },
+        {"role": "tool", "content": "result", "tool_name": "search"},
+    ]
+    client = ToolClient({"role": "assistant", "content": "Done."})
+    make_llm(client).chat(history)
+    sent = client.chat_calls[0]["messages"]
+    assert sent[1]["tool_calls"] == [{"function": {"name": "search", "arguments": {"query": "x"}}}]
+    assert sent[2] == {"role": "tool", "content": "result", "tool_name": "search"}
+    assert history[1]["tool_calls"] == [{"name": "search", "arguments": {"query": "x"}}]

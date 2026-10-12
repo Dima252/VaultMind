@@ -61,11 +61,18 @@ class AgentConfig(_Section):
     detect_contradictions: bool = True  # runs only when sources span 2+ files
     groundedness_check: bool = False
     smalltalk: bool = True  # nothing passed on an unclassified message: one short reply
+    router: bool = True  # plan and route every message; false: every message is a lookup
+    world_knowledge: bool = False  # true: labeled answers from the model's own knowledge
+    catalog_files: int = Field(default=60, ge=0)  # planner sees the whole catalog up to this
+    max_steps: int = Field(default=6, gt=0)  # tool calls per open task
+    observation_tokens: int = Field(default=2000, gt=0)  # per tool result shown to the model
+    think_open: bool = True  # thinking on for open-task reasoning steps only
 
 
 class IngestConfig(_Section):
     watch: bool = True  # index changes in paths.vault_dir while the app runs
     debounce_s: float = Field(default=2.0, ge=0)  # wait for a file to stop changing first
+    enrich: bool = True  # write a document card per file in the background, once per content
 
 
 class UIConfig(_Section):

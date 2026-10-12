@@ -75,3 +75,40 @@ class FileRecord:
     error: str | None = None
     embedder: str | None = None
     indexed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class KeyDate:
+    text: str  # the date as the document writes it ("15.3.2026", "within 30 days")
+    what: str  # what happens then ("assignment 2 due")
+
+
+@dataclass(frozen=True)
+class SectionSummary:
+    parent_id: str  # the ParentSection it summarizes
+    section_path: tuple[str, ...]
+    page_start: int | None
+    page_end: int | None
+    summary: str  # 1-2 sentences
+
+
+@dataclass(frozen=True)
+class DocCard:
+    """What a document is about as a whole, written once at ingest by the LLM (Phase 5.5).
+
+    Keyed by (sha256, model, prompt_version): identical content shares a card, and a new
+    model or prompt makes a new one. Text fields are in the document's own language.
+    """
+
+    sha256: str  # the file content it describes
+    model: str  # the LLM that wrote it
+    prompt_version: int
+    title: str
+    doc_type: str  # lower case, e.g. "syllabus", "contract", "worksheet", "lecture slides"
+    language: str  # ISO 639-1 of the main language, e.g. "en", "he"
+    summary: str  # about 8 lines
+    outline: tuple[str, ...]  # top-level headings, in order
+    entities: tuple[str, ...]  # key people, organizations, products, terms
+    dates: tuple[KeyDate, ...]
+    sections: tuple[SectionSummary, ...]  # one per parent section, in document order
+    created_at: datetime

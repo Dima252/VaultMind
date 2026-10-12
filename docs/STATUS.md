@@ -1,6 +1,6 @@
 # VaultMind: Status and Handoff
 
-_Last updated: 2026-10-12, end of day (Phase 5 built; Phase 5.5 re-planned as a full document agent: planner, tools, ReAct loop, human-in-the-loop)._
+_Last updated: 2026-10-12, evening (Phase 5.5 decisions made; M0 contracts on `main`; M1 agents next)._
 
 This is the starting point for anyone (human or agent) continuing the work. Read it after `CLAUDE.md`. The full roadmap with checkboxes is in [EXECUTION_PLAN.md](EXECUTION_PLAN.md).
 
@@ -14,7 +14,7 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 | 3. Retrieval quality | ✅ Done. Hybrid + rerank + child chunks are the new default; ablations in [RESULTS.md](RESULTS.md) |
 | 4. Agent loop + safety | ✅ Done. LangGraph loop, injection guard, contradiction and groundedness checks, traces. Measured in [RESULTS.md](RESULTS.md); only the parts that earned their keep are on by default |
 | 5. Desktop app | ✅ Built (NiceGUI, `vaultmind ui`). Opens as a browser tab by default. Hand walkthrough partly done |
-| 5.5 Document agent | ⬜ **Next.** Planned (M0–M5 in EXECUTION_PLAN.md): document cards, planner/router, tools, recipes, ReAct loop, human-in-the-loop. Today it can only look things up (see below). Three decisions open |
+| 5.5 Document agent | 🟡 **In progress.** Decisions made, M0 (contracts) done. M1 next: three parallel agents (document cards, tools + gateway, task eval). Today the app can still only look things up (see below) |
 | 6–7 | ⬜ Not started |
 
 ## Where we stopped (end of day, 2026-10-12)
@@ -53,16 +53,25 @@ The biggest lever is a **document card** per file, written at ingest (type, lang
 
 ### What's left, in order
 
-1. **Phase 5.5: document agent** (plan in EXECUTION_PLAN.md). M0 contracts → M1 document cards, tools + gateway, task eval + key-facts judge (parallel) → M2 planner + recipes → M3 ReAct loop + human-in-the-loop → M4 retrieval upgrades → M5 UI. Needs three decisions first (below).
+1. **Phase 5.5: document agent** (plan in EXECUTION_PLAN.md). ~~Decisions~~, ~~M0 contracts~~ → **M1** (three agents in parallel: `cards`, `tools`, `taskeval`; prompts in `scripts/agents/prompts/`) → M2 planner + recipes → M3 ReAct loop + human-in-the-loop → M4 retrieval upgrades → M5 UI.
 2. **Finish the hand walkthrough** of the app: drop a PDF in, ask, open a citation, open the trace, export, change a setting. Only the chat page has been tried by hand so far.
 3. **Phase 6: hardening.** Network-blocked test, telemetry audit, launch token (other local programs can use the app today), atomic re-index, Ollama-down recovery, resumable ingestion, edge-case files, secret/PII scanner. OCR needs a decision (new dependency + model download; offline Hebrew handwriting OCR is weak).
 4. **Phase 7: packaging and showcase.** One-command install, demo GIF, results write-up, CV bullets.
 5. **Quality items, any time:** harder follow-up and injection items. (The generation-side refusal fix, multi-phrasing grading and the key-facts judge are now scheduled in Phase 5.5, M4 and M1.)
 
-**Decisions needed for 5.5 (before M2):**
-1. **Citation rule.** `CLAUDE.md` says "answers cite only graded passages". A summary reads a whole document, so it can't follow that literally. Proposal: summaries, comparisons and extractions cite the sections and pages they read; lookups keep the graded-passage rule and "not found". A request about a document that doesn't exist still gets "not found".
-2. **General knowledge.** Keep strict "only my documents" (today), or add an optional, clearly labeled world-knowledge mode answered by the local model (still offline). Recommended: a switch, off by default.
-3. **Document cards at ingest.** ~10–60 s of background GPU time per document, once, cached by file hash. Recommended: on, as a switch (`ingest.enrich`).
+**Decided for 5.5 (2026-10-12):**
+1. **Citations:** summaries, comparisons, extractions and generated material cite the sections and pages a tool read. Lookups keep the graded-passage rule and "not found"; a document that doesn't exist gets "not found". Now in `CLAUDE.md`.
+2. **General knowledge:** strict "only my documents" by default; `agent.world_knowledge` (off) allows clearly labeled answers from the local model.
+3. **Document cards at ingest:** on (`ingest.enrich: true`), in the background, once per file content.
+
+**M0, what's on `main` now (2026-10-12):**
+- `LLM.chat(messages, tools=, think=) -> AssistantTurn` with `ToolSpec` / `ToolCall` and a `tool` message role (`core/providers.py`); Ollama implementation; `FakeLLM(turns=...)` and `tool_turn()` play back scripted tool calls. Live with `qwen3:14b`: "What documents do I have?" → a correct `list_documents` call in 0.3 s (thinking off) or 2.1 s (thinking on, ~700 chars of reasoning); given the tool result, it answered from it in 0.4 s.
+- `DocCard` (`core/models.py`) and `CardStore` (`store/cards.py`, registry migration 4), keyed by (sha256, model, prompt version); `ChunkIndex.parents_for_file`.
+- `TaskKind`, `Plan`, `ToolResult`, the tool exceptions and the trace keys for `plan`, `recipe`, `reason`, `tool`, `human`, `respond` (`agent/types.py`).
+- The `tasks.jsonl` format (`eval/tasks.py`).
+- Config: `ingest.enrich`, `agent.router`, `agent.world_knowledge`, `agent.catalog_files`, `agent.max_steps`, `agent.observation_tokens`, `agent.think_open`. **They do nothing yet**; each gets wired in the milestone that uses it, and they're left out of the Settings page until then.
+- Stubs for M1: `ingest/enrich.py`, `agent/catalog.py`, `agent/tools.py`, `agent/gateway.py`. Dependency `langgraph-checkpoint-sqlite` (for M3; no network code in it, checked).
+- Integration after M1 (by hand, on `main`): start the `Enricher` in `Engine` (wrap `ask` in `paused()`, chain the queue's `ready` events to `submit`), add a `vaultmind enrich` command, build cards for the real vault.
 
 **To resume:** `uv run vaultmind doctor`, then `uv run vaultmind ui`. Ollama must be running (`%LOCALAPPDATA%\Programs\Ollama\ollama.exe` if it isn't on PATH).
 

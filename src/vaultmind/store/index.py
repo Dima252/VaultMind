@@ -220,6 +220,19 @@ class ChunkIndex:
         rows = self._parents.search().where(where).limit(None).to_arrow().to_pylist()
         return {r["id"]: _parent_from_row(r) for r in rows}
 
+    def parents_for_file(self, file_id: str) -> list[ParentSection]:
+        """Every parent section of a file, in document order (`[]` for an unknown file)."""
+        if not _FILE_ID_RE.fullmatch(file_id):
+            raise ValueError(f"invalid file id: {file_id!r}")
+        rows = (
+            self._parents.search()
+            .where(f"file_id = '{file_id}'")
+            .limit(None)
+            .to_arrow()
+            .to_pylist()
+        )
+        return sorted((_parent_from_row(r) for r in rows), key=_parent_order)
+
     def close(self) -> None:
         """Release the index. A no-op today (LanceDB holds no open handles); mirrors Registry."""
 
@@ -270,6 +283,11 @@ def _child_from_row(row: dict[str, Any]) -> ChildChunk:
         page=row["page"],
         section_path=tuple(row["section_path"] or ()),
     )
+
+
+def _parent_order(parent: ParentSection) -> int:
+    """Position in the document, from the id's `:p{index}` suffix."""
+    return int(parent.id.rsplit(":p", 1)[1])
 
 
 def _parent_from_row(row: dict[str, Any]) -> ParentSection:

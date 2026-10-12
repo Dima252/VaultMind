@@ -243,3 +243,23 @@ def test_fts_search_edge_cases(tmp_path: Path) -> None:
     assert index.fts_search("chunk", k=0) == []
     # Not parsed as query syntax: punctuation is dropped and the words are matched.
     assert len(index.fts_search('"chunk" AND (x) -y: *?', k=5)) == 2
+
+
+def test_parents_for_file_in_document_order(tmp_path: Path) -> None:
+    index = _index(tmp_path)
+    _add(index, FILE_B)
+    parents = [
+        ParentSection(f"{FILE_A}:p{i}", FILE_A, f"section {i}", ("T", f"S{i}"), i + 1, i + 1)
+        for i in (10, 2, 0, 1)
+    ]
+    child = ChildChunk(f"{FILE_A}:p0:c0", f"{FILE_A}:p0", FILE_A, "c", "c", 1, ())
+    index.add(parents, [child], EMBEDDER.embed(["c"]))
+    assert [p.id.rsplit(":", 1)[1] for p in index.parents_for_file(FILE_A)] == [
+        "p0",
+        "p1",
+        "p2",
+        "p10",
+    ]
+    assert index.parents_for_file("cccccccccccccccc") == []
+    with pytest.raises(ValueError):
+        index.parents_for_file("x' OR '1'='1")

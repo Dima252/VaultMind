@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any
 
 import ollama
 
 from vaultmind.core.config import Config
-from vaultmind.core.providers import Message
+from vaultmind.core.providers import AssistantTurn, Message, ToolCall, ToolSpec
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
@@ -57,6 +58,40 @@ def _ollama_errors(*, host: str, model: str) -> Iterator[None]:
 def _content(chunk: Any) -> str:
     """Message content from a chat response, ignoring any separate thinking field."""
     return chunk["message"]["content"] or ""
+
+
+def _wire(messages: Sequence[Message]) -> list[dict[str, Any]]:
+    """Messages in Ollama's format: tool calls nest their name and arguments under `function`."""
+    wired: list[dict[str, Any]] = []
+    for message in messages:
+        item: dict[str, Any] = dict(message)
+        if "tool_calls" in message:
+            item["tool_calls"] = [{"function": dict(call)} for call in message["tool_calls"]]
+        wired.append(item)
+    return wired
+
+
+def _arguments(raw: Any) -> dict[str, Any]:
+    """Tool-call arguments as a dict; a model that sends a JSON string gets it parsed."""
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"_unparsed": raw}
+        return parsed if isinstance(parsed, dict) else {"_unparsed": raw}
+    return {}
+
+
+def _turn(response: Any) -> AssistantTurn:
+    message = response["message"]
+    calls = tuple(
+        ToolCall(call["function"]["name"], _arguments(call["function"]["arguments"]))
+        for call in message.get("tool_calls") or ()
+    )
+    content = _THINK_BLOCK.sub("", message.get("content") or "").strip()
+    return AssistantTurn(content, calls, message.get("thinking") or "")
 
 
 def _strip_thinking(stream: Iterable[str]) -> Iterator[str]:
@@ -122,7 +157,7 @@ class OllamaLLM:
         with _ollama_errors(host=self.host, model=self.model_name):
             response = self._client.chat(
                 model=self.model_name,
-                messages=list(messages),
+                messages=_wire(messages),
                 options=options,
                 keep_alive=self.keep_alive,
                 **kwargs,
@@ -134,7 +169,7 @@ class OllamaLLM:
         with _ollama_errors(host=self.host, model=self.model_name):
             chunks = self._client.chat(
                 model=self.model_name,
-                messages=list(messages),
+                messages=_wire(messages),
                 stream=True,
                 options={"num_ctx": self.num_ctx},
                 keep_alive=self.keep_alive,
@@ -143,6 +178,35 @@ class OllamaLLM:
             for delta in _strip_thinking(_content(c) for c in chunks):
                 if delta:
                     yield delta
+
+    def chat(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        think: bool | None = None,
+    ) -> AssistantTurn:
+        wired_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                },
+            }
+            for t in tools
+        ]
+        with _ollama_errors(host=self.host, model=self.model_name):
+            response = self._client.chat(
+                model=self.model_name,
+                messages=_wire(messages),
+                tools=wired_tools or None,
+                options={"num_ctx": self.num_ctx},
+                keep_alive=self.keep_alive,
+                think=self.think if think is None else think,
+            )
+        return _turn(response)
 
 
 class OllamaEmbedder:

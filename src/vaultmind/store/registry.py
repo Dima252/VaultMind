@@ -61,6 +61,16 @@ _MIGRATIONS: dict[int, str] = {
         PRIMARY KEY (chat_id, seq)
     );
     """,
+    4: """
+    CREATE TABLE doc_cards (
+        sha256         TEXT NOT NULL,
+        model          TEXT NOT NULL,
+        prompt_version INTEGER NOT NULL,
+        created_at     TEXT NOT NULL,
+        card           TEXT NOT NULL,
+        PRIMARY KEY (sha256, model, prompt_version)
+    );
+    """,
 }
 SCHEMA_VERSION = max(_MIGRATIONS)
 
