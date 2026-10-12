@@ -244,7 +244,7 @@ Dependencies: `uv add langgraph-checkpoint-sqlite` (local SQLite checkpointer fo
 
 - [x] **Decisions (user, 2026-10-12):** (1) summaries, comparisons, extractions and generated material cite the sections and pages they read; lookups keep the graded-passage rule and "not found" (in `CLAUDE.md`). (2) General knowledge: a clearly labeled local world-knowledge mode as a switch, off by default (`agent.world_knowledge`). (3) Document cards at ingest: on, as a switch (`ingest.enrich`).
 - [x] **M0: contracts on `main`.** Provider tool-call protocol + fake, types, config switches, trace keys, checkpointer, `tasks.jsonl` format, stub signatures, agent prompts in `scripts/agents/prompts/` (and the new shared files and dependency in `_rules.md`). Done 2026-10-12: `LLM.chat` checked live with `qwen3:14b` (a correct native tool call in 0.3 s with thinking off, 2.1 s on); `CardStore` (migration 4) and `ChunkIndex.parents_for_file` implemented; stubs `ingest/enrich.py`, `agent/catalog.py`, `agent/tools.py`, `agent/gateway.py`; prompts `cards.md`, `tools.md`, `taskeval.md`.
-- [ ] **M1: foundations, three agents in parallel.** (a) Document cards at ingest + card store; (b) tools + gateway; (c) `tasks.jsonl` + key-facts judge + `eval run --repeat N` + router labels.
+- [x] **M1: foundations, three agents in parallel.** (a) Document cards at ingest + card store; (b) tools + gateway; (c) `tasks.jsonl` + key-facts judge + `eval run --repeat N` + router labels. Merged 2026-10-13; numbers in STATUS.md.
 - [ ] **M2: planner, recipes, transform.** Wired into the graph with the lookup path untouched.
 - [ ] **M3: ReAct loop, human-in-the-loop, verify.**
 - [ ] **M4: retrieval upgrades** (component 10), each measured on CUAD and personal.

@@ -1,6 +1,6 @@
 # VaultMind: Status and Handoff
 
-_Last updated: 2026-10-12, evening (Phase 5.5 decisions made; M0 contracts on `main`; M1 agents next)._
+_Last updated: 2026-10-13 (Phase 5.5 M0 and M1 on `main`; M2, the planner and recipes, is next)._
 
 This is the starting point for anyone (human or agent) continuing the work. Read it after `CLAUDE.md`. The full roadmap with checkboxes is in [EXECUTION_PLAN.md](EXECUTION_PLAN.md).
 
@@ -14,10 +14,27 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 | 3. Retrieval quality | ✅ Done. Hybrid + rerank + child chunks are the new default; ablations in [RESULTS.md](RESULTS.md) |
 | 4. Agent loop + safety | ✅ Done. LangGraph loop, injection guard, contradiction and groundedness checks, traces. Measured in [RESULTS.md](RESULTS.md); only the parts that earned their keep are on by default |
 | 5. Desktop app | ✅ Built (NiceGUI, `vaultmind ui`). Opens as a browser tab by default. Hand walkthrough partly done |
-| 5.5 Document agent | 🟡 **In progress.** Decisions made, M0 (contracts) done. M1 next: three parallel agents (document cards, tools + gateway, task eval). Today the app can still only look things up (see below) |
+| 5.5 Document agent | 🟡 **In progress.** M0 (contracts) and M1 (document cards, tools + gateway, task eval) done. **M2 next:** planner + recipes. Until M2 lands, the app still only looks things up (see below) |
 | 6–7 | ⬜ Not started |
 
-## Where we stopped (end of day, 2026-10-12)
+## Where we stopped (2026-10-13)
+
+**Done 2026-10-12 evening to 2026-10-13:** the three Phase 5.5 decisions were made; M0 (shared contracts) landed on `main`; M1 was built by three parallel agents (document cards, tools + gateway, task eval), reviewed, merged and wired into the app; cards were built for the whole real vault. 837 unit tests, ruff and strict mypy pass. Everything is pushed.
+
+**Real vault, cards built (2026-10-13):** `vaultmind enrich` wrote 47 cards with 0 failures in 10 min 15 s (~13 s per document with the GPU to itself), 272 section summaries with none empty, 39 English and 8 Hebrew. The handwritten Hebrew PDF is still rejected at ingest (no usable text layer), as before.
+
+**What the app can do today:** still only lookups. The cards, catalog and tools exist and are tested, but nothing routes a message to them yet: that is M2. Run `uv run vaultmind ui` to see the app as it was; run `uv run vaultmind enrich` after adding files without the app.
+
+**Next session, start here:** M2 (planner + recipes + transform) in EXECUTION_PLAN.md. In order:
+1. Planner node: one schema call with `catalog.describe(agent.catalog_files)`, the chat history and the request, returning a `Plan`; mentions resolved with `Catalog.resolve`, `AmbiguousDocument` → a clarifying question (M3 makes it an interrupt; in M2 it can simply be the answer).
+2. Route in the graph: `lookup` → today's graph unchanged; `chat` → direct; `transform` → rework the previous answer; `list | summarize | compare | extract | generate` → recipes over the gateway; `open` → for now, the closest recipe (the loop is M3). `agent.router: false` keeps today's behavior for the ablation.
+3. Recipes cite the sections a tool read (the decided citation rule); answers name the documents they read.
+4. A task runner in the eval (planner + recipes over `personal_tasks.jsonl`): router accuracy, task success with the key-facts judge, latency per task type; CUAD and personal lookups must hold within noise.
+5. Done when the four failing requests below (and their Hebrew versions) get correct, cited answers.
+
+Before M2's eval numbers mean anything, **you** check `eval/datasets/personal_tasks_review.md` by hand.
+
+## Earlier: end of day, 2026-10-12
 
 **Done today:** the 27 personal reference answers were verified (none changed); Phase 5, the app, was built by 5 parallel agents in two waves, merged, and run on the real vault with the real models; the first hand test led to fixes (layout, greetings); two security problems were found and fixed (LAN exposure, DNS rebinding / cross-site sockets); browser mode became the default. 639 unit tests, ruff and strict mypy pass.
 
@@ -53,7 +70,8 @@ The biggest lever is a **document card** per file, written at ingest (type, lang
 
 ### What's left, in order
 
-1. **Phase 5.5: document agent** (plan in EXECUTION_PLAN.md). ~~Decisions~~, ~~M0 contracts~~ → **M1** (three agents in parallel: `cards`, `tools`, `taskeval`; prompts in `scripts/agents/prompts/`) → M2 planner + recipes → M3 ReAct loop + human-in-the-loop → M4 retrieval upgrades → M5 UI.
+1. **Phase 5.5: document agent** (plan in EXECUTION_PLAN.md). ~~Decisions~~, ~~M0~~, ~~M1~~ → **M2 planner + recipes** → M3 ReAct loop + human-in-the-loop → M4 retrieval upgrades → M5 UI.
+   - **You:** check the 63 task items by hand in `eval/datasets/personal_tasks_review.md` (gitignored), as you did for `personal.jsonl`. Facts that bundle two details should be split: the key-facts judge is lenient on them.
 2. **Finish the hand walkthrough** of the app: drop a PDF in, ask, open a citation, open the trace, export, change a setting. Only the chat page has been tried by hand so far.
 3. **Phase 6: hardening.** Network-blocked test, telemetry audit, launch token (other local programs can use the app today), atomic re-index, Ollama-down recovery, resumable ingestion, edge-case files, secret/PII scanner. OCR needs a decision (new dependency + model download; offline Hebrew handwriting OCR is weak).
 4. **Phase 7: packaging and showcase.** One-command install, demo GIF, results write-up, CV bullets.
@@ -63,6 +81,12 @@ The biggest lever is a **document card** per file, written at ingest (type, lang
 1. **Citations:** summaries, comparisons, extractions and generated material cite the sections and pages a tool read. Lookups keep the graded-passage rule and "not found"; a document that doesn't exist gets "not found". Now in `CLAUDE.md`.
 2. **General knowledge:** strict "only my documents" by default; `agent.world_knowledge` (off) allows clearly labeled answers from the local model.
 3. **Document cards at ingest:** on (`ingest.enrich: true`), in the background, once per file content.
+
+**M1, merged 2026-10-13** (three agents in parallel, then integrated by hand; 837 unit tests, ruff and strict mypy pass):
+- **Document cards** (`ingest/enrich.py`): section summaries in batches that fit half of `num_ctx`, then one card call. The language is detected from the script (Hebrew if ≥30% of letters) and named in the prompt: left to itself, qwen3 wrote Hebrew summaries of English contracts, or English summaries of Hebrew lectures. Live: 21–47 s per document (1.8–5 s per section) with the GPU shared; the whole real vault took 10 min for 47 cards. `Enricher` runs in the app with ingestion, gets every file that becomes ready, and pauses while a question runs. `vaultmind enrich` builds the missing cards from the command line.
+- **Catalog, tools, gateway** (`agent/catalog.py`, `agent/tools.py`, `agent/gateway.py`): 9 read-only tools (list_documents, document_card, outline, read, search with an optional document scope, summarize with cited sections, extract, calc, date_diff). Resolution: exact id/name/title → fuzzy words → the reranker (multilingual; right documents scored 0.49–0.99, wrong ones ≤0.05 on 8 synthetic mentions); close calls raise `AmbiguousDocument`. Live: qwen3:14b made a valid first tool call on **10/10** requests (median 2.1 s thinking off, 8.5 s on). The ollama client silently drops `anyOf`/`$ref`/`default` from tool schemas, so specs are flattened (a test checks them). `calc` has an input-length cap (a 1500-term sum hit the recursion limit, found in review).
+- **Task eval** (`eval/judge.py`, `eval/metrics.py`, `eval run --repeat N`): key-facts judge (fixed-length list, the answer's own words as evidence; 29/29 facts on the tuning cases, 8/9 held out, stable over 3 runs), clarify judge (4/4), router accuracy/confusion, task success, mean (min–max) over repeats. The task set: 63 items, 31 in Hebrew, in the gitignored `personal_tasks.jsonl`; synthetic format example in `eval/datasets/tasks_example.jsonl`.
+- **Open for M2+:** scoped search over-fetches (10× candidates, max 200) and filters by file; a `file_id` prefilter in `ChunkIndex.vector_search` / `fts_search` would be exact (contract change request). The summarize cache is in memory only. Latin-script documents count as English for cards.
 
 **M0, what's on `main` now (2026-10-12):**
 - `LLM.chat(messages, tools=, think=) -> AssistantTurn` with `ToolSpec` / `ToolCall` and a `tool` message role (`core/providers.py`); Ollama implementation; `FakeLLM(turns=...)` and `tool_turn()` play back scripted tool calls. Live with `qwen3:14b`: "What documents do I have?" → a correct `list_documents` call in 0.3 s (thinking off) or 2.1 s (thinking on, ~700 chars of reasoning); given the tool result, it answered from it in 0.4 s.
@@ -156,18 +180,19 @@ uv sync --extra rerank                  # torch cu128 + sentence-transformers
 uv run vaultmind pull-reranker          # one-time download (the only Hugging Face network step)
 uv run vaultmind doctor                 # Ollama reachable, both models pulled, reranker cached
 uv run vaultmind ingest [PATH]          # index vault/ (or PATH); incremental
+uv run vaultmind enrich                 # write missing document cards (the app does this by itself)
 uv run vaultmind ask "question" [--trace]   # agent loop: streamed answer, [n] citations, warnings, stored trace
 uv run vaultmind trace [RUN_ID] [--last N]  # stored runs and their traces
 uv run vaultmind config                 # effective config
 uv run vaultmind eval import-cuad       # CUAD subset -> vault/cuad/ + eval/datasets/cuad.jsonl
 uv run vaultmind eval install-adversarial  # poisoned + contradicting docs -> vault/adversarial/
-uv run vaultmind eval run -d cuad -d adversarial -d personal [-c a.yaml -c b.yaml] [--no-judge] [--limit N]
+uv run vaultmind eval run -d cuad -d adversarial -d personal [-c a.yaml -c b.yaml] [--no-judge] [--limit N] [--repeat N]
 uv run vaultmind eval sweep eval/results/<run>/<config>__cuad.jsonl -d cuad   # threshold replay
 ```
 
 Verified on the dev machine (Windows 11, RTX 5070 Ti 16 GB, Ollama with `qwen3:14b` + `qwen3-embedding:0.6b`):
 
-- 628 unit tests pass (fakes, no GPU). 6 live tests pass with `uv run pytest -m ollama` (they load the reranker too).
+- 837 unit tests pass (fakes, no GPU). Live tests run with `uv run pytest -m ollama` (they load the reranker too).
 - Ingesting 3 Markdown docs → 27 chunks in about 2 s. Re-running skips unchanged files.
 - `ask` answers in about 1.5 s (median) with warm models and `think: false`, plus ~7 s per invocation to load the reranker. It cites the file and section. For out-of-corpus questions it answers "I couldn't find this in your documents." and lists the closest matches. Passages with instruction-like text get a `[!]` warning.
 - ruff, ruff format, and mypy `--strict` are clean. CI (`.github/workflows/ci.yml`) runs the same checks plus unit tests.
@@ -195,7 +220,7 @@ Verified on the dev machine (Windows 11, RTX 5070 Ti 16 GB, Ollama with `qwen3:1
 | `store/traces.py` | `TraceStore`: `runs` + `trace_events` tables in `vaultmind.sqlite` (registry migration 2) | `ask` saves every loop run; `vaultmind trace` reads them |
 | `eval/dataset.py` | `EvalItem` (with a `history` of `Turn`s for follow-ups) + JSONL load/save with line-numbered errors | Validator: unanswerable ⇒ no source; answerable ⇒ `source_file` required. `history` is left out of the JSONL when empty |
 | `eval/metrics.py` | `recall_at_k`, `mrr`, `abstention_accuracy`, `percentile`, `source_matches`, `evidence_recall_at_k`, `evidence_mrr`, `injection_resistance`, `correctness_score` | Docstrings state exact formulas (cite them in the README) |
-| `eval/judge.py` | LLM judge: one schema call, verdict correct / partial / incorrect + reason, one retry, `JudgeError` | Prompt in module constants. Ignores answer content the reference doesn't cover. 11 of 15 hand-checked verdicts agreed |
+| `eval/judge.py` | LLM judge: one schema call, verdict correct / partial / incorrect + reason, one retry, `JudgeError`. Phase 5.5: `judge_key_facts` (per-fact found + evidence) and `judge_clarify` | Prompts in module constants. Correctness judge: 11 of 15 hand-checked verdicts agreed. Key-facts judge: 29/29 tuning facts, 8/9 held out |
 | `eval/runner.py` | `run_config` (linear or agent, by `agent.loop`), `compute_metrics` (plus `rewrite_rate`, `rewrite_recovered`, `analyze_p50_ms`), `check_compatible`, `save_report`, `load_results`, `format_table` | For agent runs, generation = the generate and direct nodes and retrieval = everything else. Only graded passages count as retrieved |
 | `eval/sweep.py` | Replays `rerank_threshold` over a run saved with threshold 0 (no model calls) | `vaultmind eval sweep RESULTS -d cuad` |
 | `eval/configs/*.yaml` | Ablation configs (partial YAML over the defaults) | Phase 3: baseline, hybrid, rerank, hybrid_rerank, hybrid_rerank_children (all pinned to `loop: false`). Phase 4: linear, loop_variants_rewrite, loop_no_variants, loop_no_rewrite, loop_no_guard, loop_contradictions, loop_groundedness |
@@ -206,6 +231,11 @@ Verified on the dev machine (Windows 11, RTX 5070 Ti 16 GB, Ollama with `qwen3:1
 | `store/chats.py` | `ChatStore`: chats + messages (migration 3); assistant messages keep sources, abstention, contradictions, unsupported claims and the run id | Auto-titles a chat from its first question |
 | `app/export.py`, `app/highlight.py`, `app/privacy.py`, `app/settings.py` | Markdown/PDF export (Hebrew RTL, system font with Hebrew glyphs); PDF page render with the passage highlighted in memory (and a highlighted copy for the system viewer); connection check of the app's process tree; `local.yaml` overrides + restart/reindex classification | Highlighting found 147/151 real chunks (117/121 Hebrew) |
 | `ui/` | NiceGUI: `app.py` (shell, startup, WebView2 lockdown), `state.py` (`AppState`, `off_loop`), `chat.py`, `trace_view.py`, `citation_view.py`, `library.py`, `settings_page.py`, `badge.py` | Only `ui/` imports NiceGUI and nothing imports `ui/` (`tests/test_layering.py`) |
+| `store/cards.py` | `CardStore`: document cards in `vaultmind.sqlite` (migration 4), keyed by (sha256, model, prompt version); `latest`, `prune` | Phase 5.5 M0 |
+| `ingest/enrich.py` | `build_card` (batched section summaries, then one card call; language detected from the script), `Enricher` (background worker, `paused()` while a question runs) | Started by `Engine.start_ingest` when `ingest.enrich`; `vaultmind enrich` from the CLI |
+| `agent/catalog.py` | `Catalog`: ready files + cards; `resolve(mention)` (id → name/title → fuzzy → reranker; `AmbiguousDocument` / `DocumentNotFound`); `describe()` for the planner | Phase 5.5 M1 |
+| `agent/tools.py`, `agent/gateway.py` | 9 read-only tools (list_documents, document_card, outline, read, search, summarize, extract, calc, date_diff); `Gateway`: argument validation, step budget, repeat cache, observation budget, injection guard, approval for writes | Not yet used by the graph (M2). No write or delete tools |
+| `eval/tasks.py` | `TaskItem`, `load_tasks`, `save_tasks`: the task eval format | Personal set (63 items) is gitignored; `eval/datasets/tasks_example.jsonl` is synthetic |
 | `agent/trace_text.py` | One-line trace summaries shared by the CLI and the app | |
 | `cli.py` | `config`, `doctor`, `pull-reranker`, `ingest`, `ui [--native/--browser]`, `ask [--trace]`, `trace`, `eval import-cuad`, `eval install-adversarial`, `eval run`, `eval sweep` | Forces `errors="replace"` on stdout (Windows cp1255 console) |
 
