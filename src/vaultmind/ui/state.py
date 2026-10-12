@@ -6,10 +6,14 @@ threads; they poll this state with `ui.timer`, which keeps all UI updates on Nic
 
 from __future__ import annotations
 
+import asyncio
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+
+from nicegui import run
 
 from vaultmind.app.engine import Engine
 from vaultmind.core.config import Config
@@ -76,3 +80,14 @@ def state() -> AppState:
     if _state is None:
         raise RuntimeError("app state not initialized; call init_state first")
     return _state
+
+
+async def off_loop[**P, R](fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R | None:
+    """`run.io_bound`, but a cancelled caller stays cancelled. io_bound swallows the
+    cancellation and returns None, which keeps a `ui.timer` loop running forever when its
+    page is torn down mid-call (it hung the test run after a failing test)."""
+    result = await run.io_bound(fn, *args, **kwargs)
+    task = asyncio.current_task()
+    if result is None and task is not None and task.cancelling():
+        raise asyncio.CancelledError
+    return result

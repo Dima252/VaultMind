@@ -124,7 +124,7 @@ async def test_answer_streams_with_citation_chip_and_titles_the_chat(make_app: A
         await user.open("/")
         await _ask(user, QUESTION)
         await user.should_see("within sixty days", retries=WAIT)
-        await user.should_see(kind=ui.chip, content="[1] fees.md", retries=WAIT)
+        await user.should_see(marker="citation", content="[1] fees.md", retries=WAIT)
         (chat,) = engine.chats.recent()
         assert chat.title == QUESTION
         with user.scope(marker=f"chat-{chat.id}"):
@@ -138,7 +138,7 @@ async def test_new_chat_starts_empty_and_switching_shows_its_messages(make_app: 
     async with user_simulation(root=root) as user:
         await user.open("/")
         await _ask(user, QUESTION)
-        await user.should_see(kind=ui.chip, retries=WAIT)
+        await user.should_see(marker="citation", retries=WAIT)
 
         user.find(marker="new-chat").click()
         with user.scope(marker="messages"):
@@ -166,7 +166,7 @@ async def test_open_chat_is_kept_across_navigation(make_app: Any) -> None:
         await user.open("/")
         user.find(marker="new-chat").click()
         await _ask(user, QUESTION)
-        await user.should_see(kind=ui.chip, retries=WAIT)
+        await user.should_see(marker="citation", retries=WAIT)
         user.find(marker=f"chat-{older.id}").click()
         await user.should_not_see("within sixty days")
 
@@ -185,7 +185,7 @@ async def test_ollama_down_notifies_and_restores_the_question(make_app: Any) -> 
         await _ask(user, QUESTION)
         await user.should_see("Ollama is not running", retries=WAIT)
         assert _input_value(user) == QUESTION
-        await user.should_not_see(kind=ui.chip)
+        await user.should_not_see(marker="citation")
         (field,) = user.find(marker="question").elements
         assert isinstance(field, ui.textarea) and field.enabled
         assert all(not engine.chats.messages(c.id) for c in engine.chats.recent())
@@ -206,7 +206,7 @@ async def test_trace_expansion_loads_the_trace_when_opened(make_app: Any) -> Non
     async with user_simulation(root=root) as user:
         await user.open("/")
         await _ask(user, QUESTION)
-        await user.should_see(kind=ui.chip, retries=WAIT)
+        await user.should_see(marker="citation", retries=WAIT)
         await user.should_not_see("total")
         (expansion,) = user.find(marker="trace").elements
         assert isinstance(expansion, ui.expansion)
@@ -241,7 +241,7 @@ async def test_stored_answer_shows_notes_and_closest_matches(make_app: Any, cfg:
         await user.should_see("Not found in your documents")
         await user.should_see("Closest matches")
         await user.should_see("Sources disagree")
-        await user.should_see(kind=ui.chip, content="[2] fees.md")
+        await user.should_see(marker="citation", content="[2] fees.md")
 
 
 @pytest.mark.anyio
@@ -250,7 +250,7 @@ async def test_export_chat_as_markdown(make_app: Any) -> None:
     async with user_simulation(root=root) as user:
         await user.open("/")
         await _ask(user, QUESTION)
-        await user.should_see(kind=ui.chip, retries=WAIT)
+        await user.should_see(marker="citation", retries=WAIT)
         user.find(marker="export-chat-md").click()
         response = await user.download.next()
         text = response.content.decode("utf-8")
@@ -276,8 +276,8 @@ async def test_citation_chip_opens_markdown_with_the_passage_marked(make_app: An
     async with user_simulation(root=root) as user:
         await user.open("/")
         await _ask(user, QUESTION)
-        await user.should_see(kind=ui.chip, retries=WAIT)
-        user.find(kind=ui.chip).click()
+        await user.should_see(marker="citation", retries=WAIT)
+        user.find(marker="citation").click()
         await user.should_see(kind=ui.html, content="<mark", retries=WAIT)
         (shown,) = user.find(kind=ui.html, content="<mark").elements
         assert isinstance(shown, ui.html)

@@ -19,8 +19,7 @@ from vaultmind.core.models import FileRecord, file_id_for
 from vaultmind.ingest.parsers import SUPPORTED_EXTENSIONS
 from vaultmind.ingest.pipeline import sha256_file
 from vaultmind.ingest.queue import IngestQueue, JobEvent
-from vaultmind.ui.badge import off_loop
-from vaultmind.ui.state import state
+from vaultmind.ui.state import off_loop, state
 
 REFRESH_S = 1.0  # file table poll interval
 INDICATOR_S = 0.5  # header queue indicator poll interval

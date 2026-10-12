@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Callable
-
-from nicegui import run, ui
+from nicegui import ui
 
 from vaultmind.app import privacy
 from vaultmind.app.privacy import PrivacyStatus
-from vaultmind.ui.state import state
+from vaultmind.ui.state import off_loop, state
 
 _EXPLANATION = (
     "VaultMind checks the network connections of its own process and of every process it "
@@ -47,17 +44,6 @@ def privacy_badge() -> None:
         tooltip.text = _summary(status)
 
     ui.timer(state().cfg.ui.privacy_check_s, refresh)
-
-
-async def off_loop[**P, R](fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R | None:
-    """`run.io_bound`, but a cancelled caller stays cancelled. io_bound swallows the
-    cancellation and returns None, which keeps a `ui.timer` loop running forever when its
-    page is torn down mid-call (it hung the test run after a failing test)."""
-    result = await run.io_bound(fn, *args, **kwargs)
-    task = asyncio.current_task()
-    if result is None and task is not None and task.cancelling():
-        raise asyncio.CancelledError
-    return result
 
 
 def _label(status: PrivacyStatus) -> str:

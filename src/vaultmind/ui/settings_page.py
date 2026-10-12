@@ -12,8 +12,7 @@ from pydantic import ValidationError
 
 from vaultmind.app.settings import needs_reindex, needs_restart, save_local
 from vaultmind.core.config import DEFAULT_CONFIG, LOCAL_CONFIG, Config, load_config
-from vaultmind.ui.badge import off_loop
-from vaultmind.ui.state import AppState, state
+from vaultmind.ui.state import AppState, off_loop, state
 
 LOCAL_PATH = LOCAL_CONFIG  # where Save writes (a module constant so tests can redirect it)
 
