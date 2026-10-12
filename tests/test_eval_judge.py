@@ -11,15 +11,24 @@ from vaultmind.core.config import load_config
 from vaultmind.core.ollama import OllamaLLM
 from vaultmind.core.providers import Message
 from vaultmind.eval.judge import (
+    CLARIFY_RETRY_PROMPT,
+    CLARIFY_SCHEMA,
+    CLARIFY_SYSTEM_PROMPT,
     JUDGE_RETRY_PROMPT,
     JUDGE_SCHEMA,
     JUDGE_SYSTEM_PROMPT,
+    KEY_FACTS_RETRY_PROMPT,
+    KEY_FACTS_SYSTEM_PROMPT,
     MAX_REASON_CHARS,
     MAX_REFERENCE_CHARS,
     JudgeError,
     JudgeResult,
+    KeyFactsResult,
     Verdict,
     judge,
+    judge_clarify,
+    judge_key_facts,
+    key_facts_schema,
 )
 
 from .fakes import FakeLLM
@@ -214,3 +223,178 @@ def test_live_judge_three_cases() -> None:
         llm=llm,
     )
     assert partial.verdict in {Verdict.PARTIAL, Verdict.INCORRECT}, partial.reason
+
+
+# --- key-facts judge --------------------------------------------------------------------------
+
+REQUEST = "Summarize the supply agreement."
+FACTS = ["The term is 3 years.", "Vermont law governs.", "Invoices are due in 45 days."]
+SUMMARY = "A three-year supply deal under Vermont law [1]."
+
+
+def _facts(*stated: bool, numbers: Sequence[int] | None = None) -> dict[str, Any]:
+    nums = list(numbers) if numbers is not None else list(range(1, len(stated) + 1))
+    return {
+        "facts": [
+            {"number": n, "reason": f"reason {n}", "stated": s}
+            for n, s in zip(nums, stated, strict=True)
+        ]
+    }
+
+
+def test_key_facts_mixed_found_and_score() -> None:
+    llm = SchemaRecordingLLM([_facts(True, True, False)])
+    result = judge_key_facts(REQUEST, FACTS, SUMMARY, llm=llm)
+    assert result == KeyFactsResult((True, True, False), ("reason 1", "reason 2", "reason 3"))
+    assert result.score == pytest.approx(2 / 3)
+    assert llm.schemas == [key_facts_schema(3)]
+    facts_schema = key_facts_schema(3)["properties"]["facts"]
+    assert facts_schema["minItems"] == facts_schema["maxItems"] == 3
+    # evidence and reason come before the verdict, so the model quotes before it decides
+    assert facts_schema["items"]["required"] == ["number", "evidence", "reason", "stated"]
+
+
+def test_key_facts_prompt_numbers_facts_inside_delimiters() -> None:
+    llm = FakeLLM([_facts(True, True, True)])
+    judge_key_facts(REQUEST, [*FACTS[:2], "Multi\n  line   fact."], SUMMARY, llm=llm)
+    system, user = llm.calls[0]
+    assert system == {"role": "system", "content": KEY_FACTS_SYSTEM_PROMPT}
+    prompt = user["content"]
+    assert f"<request>\n{REQUEST}\n</request>" in prompt
+    numbered = f"1. {FACTS[0]}\n2. {FACTS[1]}\n3. Multi line fact."
+    assert f"<key_facts>\n{numbered}\n</key_facts>" in prompt
+    assert f"<answer>\n{SUMMARY}\n</answer>" in prompt
+    assert prompt.index("<request>") < prompt.index("<key_facts>") < prompt.index("<answer>")
+
+
+def test_key_facts_entries_in_any_order() -> None:
+    llm = FakeLLM([_facts(False, True, True, numbers=[3, 1, 2])])
+    result = judge_key_facts(REQUEST, FACTS, SUMMARY, llm=llm)
+    assert result.found == (True, True, False)
+    assert result.reasons == ("reason 1", "reason 2", "reason 3")
+
+
+def test_key_facts_all_found_and_hebrew_answer() -> None:
+    llm = FakeLLM([_facts(True, True, True)])
+    result = judge_key_facts(REQUEST, FACTS, "הסכם לשלוש שנים לפי דיני ורמונט [1].", llm=llm)
+    assert result.score == 1.0
+    assert "ורמונט" in llm.calls[0][1]["content"]
+
+
+def test_key_facts_no_facts_and_empty_answer_skip_llm() -> None:
+    llm = FakeLLM()
+    assert judge_key_facts(REQUEST, [], SUMMARY, llm=llm) == KeyFactsResult((), ())
+    assert judge_key_facts(REQUEST, [], SUMMARY, llm=llm).score == 1.0
+    empty = judge_key_facts(REQUEST, FACTS, "  \n", llm=llm)
+    assert empty.found == (False, False, False) and empty.score == 0.0
+    assert llm.calls == []
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not json",
+        '["facts"]',
+        '{"facts": "none"}',
+        _facts(True, True),  # too few: length mismatch
+        _facts(True, True, True, True),  # too many
+        _facts(True, True, True, numbers=[1, 1, 2]),  # repeated number
+        _facts(True, True, True, numbers=[0, 1, 2]),  # out of range
+        {"facts": [{"number": 1, "reason": "r", "stated": "yes"}] * 3},
+        {"facts": [{"number": "1", "reason": "r", "stated": True}] * 3},
+        {"facts": [{"number": n, "stated": True} for n in (1, 2, 3)]},
+        {"facts": [1, 2, 3]},
+    ],
+)
+def test_key_facts_malformed_outputs_trigger_retry(bad: str | dict[str, Any]) -> None:
+    llm = FakeLLM([bad, _facts(True, False, True)])
+    assert judge_key_facts(REQUEST, FACTS, SUMMARY, llm=llm).found == (True, False, True)
+    assert len(llm.calls) == 2
+    retry = llm.calls[1]
+    assert retry[3] == {"role": "user", "content": KEY_FACTS_RETRY_PROMPT.format(count=3)}
+    assert "exactly 3 entries" in retry[3]["content"]
+
+
+def test_key_facts_length_mismatch_twice_raises() -> None:
+    llm = FakeLLM([_facts(True), _facts(True, True)])
+    with pytest.raises(JudgeError, match="expected 3 facts, got 2"):
+        judge_key_facts(REQUEST, FACTS, SUMMARY, llm=llm)
+    assert len(llm.calls) == 2
+
+
+def test_key_facts_reason_collapsed_and_capped() -> None:
+    entry = {"number": 1, "reason": "Says it.\n\n  Twice. " + "x " * 300, "stated": True}
+    llm = FakeLLM([{"facts": [entry]}])
+    [reason] = judge_key_facts(REQUEST, FACTS[:1], SUMMARY, llm=llm).reasons
+    assert reason.startswith("Says it. Twice.") and len(reason) <= MAX_REASON_CHARS
+
+
+# --- clarify judge ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("asks", [True, False])
+def test_clarify_yes_and_no(asks: bool) -> None:
+    llm = SchemaRecordingLLM([{"reason": "r", "asks": asks}])
+    assert judge_clarify("Summarize the syllabus", "Which one: A or B?", llm=llm) is asks
+    assert llm.schemas == [CLARIFY_SCHEMA]
+    system, user = llm.calls[0]
+    assert system == {"role": "system", "content": CLARIFY_SYSTEM_PROMPT}
+    assert "<request>\nSummarize the syllabus\n</request>" in user["content"]
+    assert "<response>\nWhich one: A or B?\n</response>" in user["content"]
+
+
+def test_clarify_retry_then_failure() -> None:
+    llm = FakeLLM(['{"asks": "yes", "reason": "r"}', {"reason": "r", "asks": True}])
+    assert judge_clarify("q", "a", llm=llm) is True
+    assert llm.calls[1][3] == {"role": "user", "content": CLARIFY_RETRY_PROMPT}
+
+    llm = FakeLLM(["nope", '{"asks": true}'])
+    with pytest.raises(JudgeError, match="missing reason"):
+        judge_clarify("q", "a", llm=llm)
+
+
+def test_clarify_empty_answer_skips_llm() -> None:
+    llm = FakeLLM()
+    assert judge_clarify("q", "   ", llm=llm) is False
+    assert llm.calls == []
+
+
+# --- live: key facts ---------------------------------------------------------------------------
+
+_LIVE_FACTS = [
+    "The monthly fee rises from USD 12,500 to USD 14,200.",
+    "The change takes effect on July 1, 2025.",
+    "Three compressors are added.",
+]
+
+
+@pytest.mark.ollama
+def test_live_key_facts_paraphrase_hebrew_and_contradiction() -> None:
+    llm = OllamaLLM.from_config(load_config())
+    request = "What does the amendment change?"
+
+    english = judge_key_facts(
+        request,
+        _LIVE_FACTS,
+        "From July 1, 2025 the client pays $14,200 a month instead of $12,500 [1]. The emergency "
+        "response time stays the same [1].",
+        llm=llm,
+    )
+    assert english.found == (True, True, False), english.reasons
+
+    hebrew = judge_key_facts(
+        request,
+        _LIVE_FACTS,
+        "התוספת מוסיפה שלושה מדחסים, ומה-1 ביולי 2025 התשלום החודשי עולה מ-12,500 ל-14,200 "
+        "דולר [1].",
+        llm=llm,
+    )
+    assert hebrew.found == (True, True, True), hebrew.reasons
+
+    wrong = judge_key_facts(
+        request,
+        _LIVE_FACTS,
+        "The monthly fee drops from USD 14,200 to USD 12,500 starting July 1, 2025 [1].",
+        llm=llm,
+    )
+    assert wrong.found[0] is False, wrong.reasons

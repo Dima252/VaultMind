@@ -506,10 +506,14 @@ def eval_run(
         int | None, typer.Option(min=1, help="Only the first N items (quick runs).")
     ] = None,
     out_dir: Annotated[Path, typer.Option(help="Where raw results go.")] = Path("eval/results"),
+    repeat: Annotated[
+        int, typer.Option(min=1, help="Run each config/dataset N times; report mean (min-max).")
+    ] = 1,
 ) -> None:
     """Score configs on eval datasets and print a comparison table.
 
-    The judge always uses the first config's LLM, so every config gets the same judge.
+    The judge always uses the first config's LLM, so every config gets the same judge. With
+    --repeat N > 1, raw results are saved per repeat (<config>__<dataset>__r1.jsonl, ...).
     """
     from datetime import datetime
 
@@ -519,7 +523,7 @@ def eval_run(
         ItemResult,
         RunReport,
         check_compatible,
-        format_table,
+        format_repeat_table,
         run_config,
         save_report,
     )
@@ -538,7 +542,7 @@ def eval_run(
 
     run_dir = out_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
     judge_llm = OllamaLLM.from_config(next(iter(configs.values()))) if judge else None
-    reports: list[RunReport] = []
+    runs: list[list[RunReport]] = []  # one entry per (config, dataset): its repeats
     rerankers: dict[str, Reranker | None] = {}  # loaded once per model, shared across configs
     for config_name, cfg in configs.items():
         with _store(cfg) as (index, registry), _ollama_errors():
@@ -553,7 +557,6 @@ def eval_run(
             reranker = rerankers.get(cfg.models.reranker) if cfg.retrieval.rerank else None
             for dataset_name, items in loaded.items():
                 items = items[:limit] if limit else items
-                typer.echo(f"{config_name} / {dataset_name}: {len(items)} items")
 
                 def progress(
                     result: ItemResult, total: int = len(items), loop: bool = cfg.agent.loop
@@ -562,24 +565,31 @@ def eval_run(
                     extra = f" rewrites={result.rewrites}" if loop else ""
                     typer.echo(f"  [{result.index + 1}/{total}] {mark}{extra}")
 
-                report = run_config(
-                    cfg,
-                    items,
-                    config_name=config_name,
-                    dataset_name=dataset_name,
-                    llm=llm,
-                    embedder=embedder,
-                    index=index,
-                    registry=registry,
-                    reranker=reranker,
-                    judge_llm=judge_llm,
-                    on_item=progress,
-                )
-                save_report(report, run_dir)
-                reports.append(report)
+                repeats: list[RunReport] = []
+                for r in range(1, repeat + 1):
+                    of = f" (repeat {r}/{repeat})" if repeat > 1 else ""
+                    typer.echo(f"{config_name} / {dataset_name}: {len(items)} items{of}")
+                    report = run_config(
+                        cfg,
+                        items,
+                        config_name=config_name,
+                        dataset_name=dataset_name,
+                        llm=llm,
+                        embedder=embedder,
+                        index=index,
+                        registry=registry,
+                        reranker=reranker,
+                        judge_llm=judge_llm,
+                        on_item=progress,
+                    )
+                    save_report(report, run_dir, repeat=r if repeat > 1 else None)
+                    repeats.append(report)
+                runs.append(repeats)
 
     typer.echo()
-    typer.echo(format_table(reports))
+    typer.echo(format_repeat_table(runs))
+    if repeat > 1:
+        typer.echo(f"Each value: mean (min-max) over {repeat} repeats.")
     typer.echo()
     typer.echo(f"Raw results: {run_dir}")
 
