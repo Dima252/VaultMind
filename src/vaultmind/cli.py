@@ -184,6 +184,46 @@ def ingest(
 
 
 @app.command()
+def enrich(config_path: ConfigOption = None) -> None:
+    """Write the missing document cards for indexed files (~10-60 s of GPU per file, once)."""
+    from vaultmind.core.ollama import OllamaLLM
+    from vaultmind.ingest.enrich import CardEvent, Enricher
+    from vaultmind.store.cards import CardStore
+
+    cfg = load_config(config_path)
+    with _store(cfg) as (index, registry), _ollama_errors():
+        names = {r.id: r.path.name for r in registry.all()}
+        cards = CardStore(_db_path(cfg))
+        counts = {"ready": 0, "failed": 0}
+
+        def report(event: CardEvent) -> None:
+            name = names.get(event.file_id, event.file_id)
+            if event.status == "writing":
+                typer.echo(f"  writing {name}")
+                return
+            counts[event.status] += 1
+            if event.status == "failed":
+                typer.secho(f"[FAIL] {name}: {event.error}", fg="red")
+
+        enricher = Enricher(
+            cfg,
+            llm=OllamaLLM.from_config(cfg),
+            index=index,
+            registry=registry,
+            cards=cards,
+            on_event=report,
+        )
+        enricher.start()
+        try:
+            enricher.scan()
+            enricher.wait_idle()
+        finally:
+            enricher.stop()
+            cards.close()
+    typer.echo(f"cards written {counts['ready']}, failed {counts['failed']}")
+
+
+@app.command()
 def ui(
     native: Annotated[
         bool | None,

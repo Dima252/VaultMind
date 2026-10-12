@@ -403,3 +403,30 @@ def test_eval_run_rejects_repeat_zero(config_path: Path, tmp_path: Path, llm: Fa
     )
     out = _eval_run(config_path, dataset, tmp_path / "results", "--repeat", "0")
     assert out.exit_code != 0
+
+
+def test_enrich_writes_missing_cards_once(
+    config_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    card = {
+        "title": "Manual",
+        "doc_type": "manual",
+        "language": "en",
+        "summary": "How to install.",
+        "outline": ["Setup"],
+        "entities": ["uv"],
+        "dates": [],
+    }
+    sections = {"summaries": [{"section": 0, "summary": "Install with uv."}]}
+    fake = FakeLLM([sections, card])
+    monkeypatch.setattr(ollama.OllamaLLM, "from_config", lambda cfg: fake)
+    args = ["enrich", "--config", str(config_path)]
+
+    result = app_runner.invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    assert "writing manual.md" in result.output
+    assert "cards written 1, failed 0" in result.output
+
+    again = app_runner.invoke(cli.app, args)
+    assert "cards written 0, failed 0" in again.output
+    assert len(fake.calls) == 2
