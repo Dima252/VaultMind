@@ -1,6 +1,6 @@
 # VaultMind: Status and Handoff
 
-_Last updated: 2026-10-12 (Phase 5 built)._
+_Last updated: 2026-10-12, end of day (Phase 5 built; Phase 5.5 agentic tasks planned next)._
 
 This is the starting point for anyone (human or agent) continuing the work. Read it after `CLAUDE.md`. The full roadmap with checkboxes is in [EXECUTION_PLAN.md](EXECUTION_PLAN.md).
 
@@ -13,14 +13,48 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 | 2. Evaluation harness | ✅ Done. Baseline in [RESULTS.md](RESULTS.md), reproducible. `eval generate` deferred |
 | 3. Retrieval quality | ✅ Done. Hybrid + rerank + child chunks are the new default; ablations in [RESULTS.md](RESULTS.md) |
 | 4. Agent loop + safety | ✅ Done. LangGraph loop, injection guard, contradiction and groundedness checks, traces. Measured in [RESULTS.md](RESULTS.md); only the parts that earned their keep are on by default |
-| 5. Desktop app | ✅ Built (NiceGUI, `vaultmind ui`). Opens as a browser tab by default (decided 2026-10-12, see below). Hand walkthrough pending |
+| 5. Desktop app | ✅ Built (NiceGUI, `vaultmind ui`). Opens as a browser tab by default. Hand walkthrough partly done |
+| 5.5 Agentic tasks | ⬜ **Next.** Summarize, list, compare, extract: today it can only look things up (see below) |
 | 6–7 | ⬜ Not started |
 
-**Phase 5 state:** `uv run vaultmind ui` (a tab in your default browser) or `vaultmind ui --native` (own window). Built in two waves of parallel agents (plan in EXECUTION_PLAN.md, "Parallel build"). Verified with the real models on the real vault: the engine loads in ~15 s plus ~10 s Ollama warm-up (a loading screen covers it), first token ~2.9 s, follow-ups ~1.6 s; the startup scan of an unchanged vault takes ~2.6 s; 12 questions asked while 9 files re-indexed in a loop all answered correctly with no errors. Served on 127.0.0.1 only (not reachable from the LAN), no external assets.
+## Where we stopped (end of day, 2026-10-12)
 
-**Decided (2026-10-12): browser mode is the default** (`ui.native: false`). In native mode the window's WebView2 (Microsoft Edge runtime) opens HTTPS connections to Microsoft servers by itself; switching off its background services and a dead local proxy removed the network-service traffic, but its main process still connects through Windows' own networking. In browser mode VaultMind's process tree is one Python process with no outside connections (verified; the badge is green). The trade-off: the user's browser can see the page, so **use a separate browser profile with no extensions** for VaultMind, and don't use "Translate this page", AI sidebars or enhanced spell check on its tab (they send page text or typed text out). `--native` stays available.
+**Done today:** the 27 personal reference answers were verified (none changed); Phase 5, the app, was built by 5 parallel agents in two waves, merged, and run on the real vault with the real models; the first hand test led to fixes (layout, greetings); two security problems were found and fixed (LAN exposure, DNS rebinding / cross-site sockets); browser mode became the default. 639 unit tests, ruff and strict mypy pass.
 
-**Next:** the user walks through the app by hand (drop files in, watch them index, ask, open a citation, inspect the trace, export); then Phase 6.
+**Phase 5 state:** `uv run vaultmind ui` (a tab in your default browser) or `vaultmind ui --native` (own window). Verified live: the engine loads in ~15 s plus ~10 s Ollama warm-up (a loading screen covers it), first token ~2.9 s, follow-ups ~1.6 s; the startup scan of an unchanged vault takes ~2.6 s; 12 questions asked while 9 files re-indexed in a loop all answered correctly. Served on 127.0.0.1 only, refuses other websites (Host/Origin check), no external assets. Layout checked with headless Edge screenshots at 600 and 1280 px.
+
+**Decided: browser mode is the default** (`ui.native: false`). In native mode the window's WebView2 (Microsoft Edge runtime) opens HTTPS connections to Microsoft servers by itself; switching off its background services and a dead local proxy removed the network-service traffic, but its main process still connects through Windows' own networking. In browser mode VaultMind's process tree is one Python process with no outside connections (verified; the badge is green). The trade-off: the browser can see the page, so **use a separate browser profile with no extensions** for VaultMind, and don't use "Translate this page", AI sidebars or enhanced spell check on its tab. `--native` stays available.
+
+### Major gap found by the user: it searches, it doesn't act like an agent
+
+Asking it to summarize, list or compare fails. Live check with the real models (2026-10-12):
+
+| Request | Result |
+|---|---|
+| "Summarize the Workato Recipe Design Worksheet" | "I couldn't find this in your documents." |
+| "Summarize the AI in the workplace syllabus" | A "summary" of the title page only (it read one 256-token chunk) |
+| "What documents do I have?" | "I couldn't find this in your documents." |
+| "Compare the Solution Design Checklist with the Recipe Design Worksheet" | "I couldn't find this in your documents." |
+
+**Why:** every message takes the same path: search, keep the top 5 small passages that pass the reranker threshold, answer only from those. That fits lookups ("what is the deadline"), and nothing else:
+- a summary needs a whole document, not 5 fragments;
+- "what documents do I have" needs the file registry, which the agent can't see;
+- a comparison needs two whole documents;
+- a request like "summarize X" scores low against any single passage, so grading drops it to "not found".
+
+The "agent" today is a corrective retrieval loop (rewrite, check, cite), and Phase 4 showed even its retrieval steps add little. It has no tools and doesn't decide what kind of task it was given. **Fixing this is the next phase (5.5 in EXECUTION_PLAN.md) and comes before hardening:** it's what the product is supposed to be.
+
+### What's left, in order
+
+1. **Phase 5.5: agentic tasks** (new; plan in EXECUTION_PLAN.md). A task router plus local tools: list documents, read/outline a document, scoped search, summarize (map-reduce over a document's sections, cached), compare, extract across documents. Measured with new eval items. Needs one decision first (below).
+2. **Finish the hand walkthrough** of the app: drop a PDF in, ask, open a citation, open the trace, export, change a setting. Only the chat page has been tried by hand so far.
+3. **Phase 6: hardening.** Network-blocked test, telemetry audit, launch token (other local programs can use the app today), atomic re-index, Ollama-down recovery, resumable ingestion, edge-case files, secret/PII scanner. OCR needs a decision (new dependency + model download; offline Hebrew handwriting OCR is weak).
+4. **Phase 7: packaging and showcase.** One-command install, demo GIF, results write-up, CV bullets.
+5. **Quality items, any time:** the generation-side fix for refusals with the right passage in context (redesign idea 2 below), a key-facts judge with `eval run --repeat N`, harder follow-up and injection items.
+
+**Decision needed for 5.5:** `CLAUDE.md` says "answers cite only graded passages". A summary reads a whole document, so it can't follow that literally. Proposal: summaries and comparisons cite the sections and pages they read; lookups keep the graded-passage rule and the "not found" behavior. A request about a document that doesn't exist still gets "not found".
+
+**To resume:** `uv run vaultmind doctor`, then `uv run vaultmind ui`. Ollama must be running (`%LOCALAPPDATA%\Programs\Ollama\ollama.exe` if it isn't on PATH).
 
 The 27 personal reference answers were verified against the source pages (2026-10-12); none needed changing, so the personal-set numbers in RESULTS.md stand.
 
@@ -182,7 +216,7 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
 - [ ] `vaultmind eval generate` (LLM-drafted questions for human review). Low priority.
 - [ ] Optional: CUAD as PDFs (`CUAD_v1.zip`) to measure the txt-vs-PDF parsing gap.
 
-### Phase 5: Desktop app (next, largest)
+### Phase 5: Desktop app (built 2026-10-12)
 `vaultmind ui`, a NiceGUI native window with:
 - streamed chat with citation chips, and a trace panel
 - a library with per-file status, and live folder watching
@@ -193,7 +227,12 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
 
 Load the models once at startup.
 
+### Phase 5.5: Agentic tasks (next)
+Task router, document resolver, local tools (list, outline, read, scoped search), summarize (map-reduce, cached), compare, extract; new eval items. Full plan in EXECUTION_PLAN.md. Needs the citation-rule decision above.
+
 ### Phase 6: Hardening
+- Launch token, so other programs on the machine can't use the app (other websites are already refused).
+- Atomic re-index (a question asked mid-re-index can miss that file).
 - A network-blocked test: ingest + ask with all sockets blocked except 127.0.0.1.
 - A telemetry audit. langsmith is installed; tracing is forced off.
 - Edge cases: encrypted or huge files, files changing during indexing.

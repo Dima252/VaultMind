@@ -12,6 +12,7 @@ The order matters. A plain baseline and the eval harness come **before** any of 
 | 3 | Retrieval quality: hybrid, rerank, small-to-big | M |
 | 4 | Agentic corrective loop + traces | M |
 | 5 | Desktop UI + live folder watching | L |
+| 5.5 | Agentic tasks: summarize, list, compare, extract | M |
 | 6 | Hardening + privacy guarantees | M |
 | 7 | Packaging + showcase | S |
 
@@ -155,6 +156,27 @@ The app splits into services with no UI code (testable with fakes) and NiceGUI p
 - **Final integration:** run the app against the real vault and models, walk through the "done when" scenario, record findings in STATUS.md.
 
 Rules for the UI: always `ui.run(host="127.0.0.1", reload=False, show_welcome_message=False)` (NiceGUI binds `0.0.0.0` by default outside native mode), no `on_air`, no CDN assets. Blocking engine calls run off the event loop (`run.io_bound`); worker-thread callbacks hop back to the loop.
+
+## Phase 5.5: Agentic tasks (summarize, list, compare, extract)
+
+Goal: VaultMind does what was asked, not only lookups. Found in the first hand test (2026-10-12): "summarize X", "what documents do I have" and "compare X and Y" all fail, because every message goes through search → top 5 passages → answer (details in STATUS.md). This phase comes before hardening.
+
+Principles: everything stays local; every tool is a plain Python function over the index and registry (no MCP, no network); each new behavior is a config switch the eval can ablate; every step lands in the trace.
+
+- [ ] **Decision (user):** summaries and comparisons cite the sections and pages they read, instead of "graded passages only" (update `CLAUDE.md`). Lookups keep the current rule and "not found".
+- [ ] **Task router:** the analyze call always runs and returns `task: lookup | summarize | compare | list | extract | chat` plus the documents the request names. Today analyze is skipped on first messages to save ~0.5 s; measure the cost again, and try a small model for it (`qwen3:4b`, redesign idea 3). Eval: router accuracy on ~40 labeled requests (English and Hebrew).
+- [ ] **Document resolver:** map "the Workato worksheet" or "the syllabus" to registry files (file name, title, folder; fuzzy match; fall back to the file with the most top search hits). Ambiguous → ask the user which one; none → "not found".
+- [ ] **Tools** (`agent/tools.py`): `list_documents()` (registry: name, folder, pages, status), `document_outline(file)` (section headings), `read_document(file, pages=None)` (parent sections in order), `search(query, file=None)` (today's hybrid + rerank, optionally scoped to one file).
+- [ ] **Summarize:** map-reduce over the document's parent sections within `num_ctx`: one call when the document fits, else summarize groups, then combine. Each point cites its section and page. Cache summaries per (file sha256, model, prompt version) in SQLite, so asking again is instant. Optional: summarize at ingest (config switch), which also helps "which document is about X".
+- [ ] **Compare:** summarize or extract both documents, then one compare call; reuse the contradiction check for conflicting facts.
+- [ ] **Extract across documents** ("all deadlines", "every payment term"): search scoped to each document plus a structured extraction call; a table answer with citations.
+- [ ] **Open tool loop (only if the router isn't enough):** Ollama tool calling with qwen3 over the same tools, bounded steps, every call traced. Start with the router: it's predictable and testable. Add the loop only for requests the router measurably can't handle.
+- [ ] **Eval:** new `tasks.jsonl` items tagged `summarize`, `list`, `compare`, `extract`, with key-point checklists the judge checks (this needs the key-facts judge from the open items). CUAD and personal lookup numbers must not drop.
+- [ ] **UI:** a "Summarize" action per file in the Library; the trace shows the route and tool calls; summary answers show their cited sections as chips.
+
+**Done when:** the four failing requests above (and their Hebrew versions) get correct, cited answers; lookup quality and latency hold; the router and each task have measured numbers in RESULTS.md.
+
+Parallel split (same pattern as Phase 5): contracts first (task types in `agent/types.py`, tool signatures, config switches), then agents for (a) router + resolver, (b) tools + summarize/compare/extract nodes, (c) eval items + judge, (d) UI. Graph wiring and the live checks happen on `main`.
 
 ## Phase 6: Hardening + privacy
 
