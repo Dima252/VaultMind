@@ -67,6 +67,7 @@ The 27 personal reference answers were verified against the source pages (2026-1
 | `uv add` re-syncs without the `rerank` extra and uninstalls torch | Run `uv sync --extra rerank` after adding dependencies (in every agent prompt) |
 | NTFS updates access times about hourly, so the startup scan's reads came back as "modified" events and the watcher resubmitted every file (seen live: 72 events on an unchanged vault) | The watcher records existing files' (mtime, size) on start and only submits real changes |
 | The native window's WebView2 connects to Microsoft servers by itself | Background networking off + dead proxy; the main process still connects. Open decision, see the top of this file |
+| **Other websites could read and drive the app.** 127.0.0.1 keeps the network out, but not a malicious page in a local browser: the server answered a forged Host header (DNS rebinding) with the full library page, and NiceGUI's socket.io allows any origin. Affects native and browser mode alike | `ui/local_only.py`: ASGI middleware that returns 403 unless Host is our address and Origin (when sent) is our page. Verified live: forged Host and foreign-origin socket.io/websocket requests get 403, our own page works |
 | Merged UI tests waited for "any chip" to mean "the answer arrived", but the header's privacy badge is a chip too | Tests use the citation chips' marker |
 
 ## Redesign considerations (not scheduled; each needs a measurement before it lands)

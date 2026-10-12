@@ -16,6 +16,7 @@ from nicegui import app, run, ui
 
 from vaultmind.core.config import Config
 from vaultmind.ui import badge, chat, library, settings_page
+from vaultmind.ui.local_only import LocalOnly
 from vaultmind.ui.state import init_state, state
 
 HOST = "127.0.0.1"
@@ -42,6 +43,7 @@ def main(cfg: Config, config_source: Path | None = None) -> None:
     init_state(cfg, config_source)
     if cfg.ui.native:
         os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = WEBVIEW2_ARGS
+    app.add_middleware(LocalOnly, host=HOST, port=cfg.ui.port)  # no other site may talk to us
     app.native.settings["ALLOW_DOWNLOADS"] = True  # exports use ui.download in the native window
     app.on_startup(_load_engine)
     app.on_shutdown(lambda: state().close())
