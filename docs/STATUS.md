@@ -1,6 +1,6 @@
 # VaultMind: Status and Handoff
 
-_Last updated: 2026-10-12 (end of Phase 4)._
+_Last updated: 2026-10-12 (Phase 5 built)._
 
 This is the starting point for anyone (human or agent) continuing the work. Read it after `CLAUDE.md`. The full roadmap with checkboxes is in [EXECUTION_PLAN.md](EXECUTION_PLAN.md).
 
@@ -13,9 +13,14 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 | 2. Evaluation harness | ✅ Done. Baseline in [RESULTS.md](RESULTS.md), reproducible. `eval generate` deferred |
 | 3. Retrieval quality | ✅ Done. Hybrid + rerank + child chunks are the new default; ablations in [RESULTS.md](RESULTS.md) |
 | 4. Agent loop + safety | ✅ Done. LangGraph loop, injection guard, contradiction and groundedness checks, traces. Measured in [RESULTS.md](RESULTS.md); only the parts that earned their keep are on by default |
-| 5–7 | ⬜ Not started |
+| 5. Desktop app | ✅ Built (NiceGUI, `vaultmind ui`). One open decision: the native window's WebView2 phones Microsoft (see below) |
+| 6–7 | ⬜ Not started |
 
-**In progress:** Phase 5, the desktop app (NiceGUI), built in two waves of parallel agents (plan in EXECUTION_PLAN.md, Phase 5 "Parallel build"). Contracts, the UI shell and wave 1 (ingest queue + watcher, chat store + export, highlighted citations + privacy check + settings) are merged; wave 2 (chat UI, library/settings UI) is running. `Engine` verified live: ~15 s load + ~10 s Ollama warm-up at startup, first token ~2.9 s, follow-up ~1.6 s. The engine is ready for it: `agent.graph.stream_agent` streams tokens and returns an `AgentResult` with sources, warnings and the trace. Keep the reranker and models loaded for the app's lifetime (loading the reranker takes ~7 s).
+**Phase 5 state:** `uv run vaultmind ui` (native window) or `vaultmind ui --browser`. Built in two waves of parallel agents (plan in EXECUTION_PLAN.md, "Parallel build"). Verified with the real models on the real vault: the engine loads in ~15 s plus ~10 s Ollama warm-up (a loading screen covers it), first token ~2.9 s, follow-ups ~1.6 s; the startup scan of an unchanged vault takes ~2.6 s; 12 questions asked while 9 files re-indexed in a loop all answered correctly with no errors. Served on 127.0.0.1 only (not reachable from the LAN), no external assets.
+
+**Open decision (privacy):** in native mode the window's WebView2 (Microsoft Edge runtime) opens HTTPS connections to Microsoft servers by itself, with only our 127.0.0.1 page loaded. VaultMind's own Python process makes none. The privacy badge shows it red, correctly. `ui/app.py` switches off WebView2's background services and routes the rest to a dead local proxy: that removed the network-service connections, but the main browser process still connects (it uses Windows' own networking). Options: make `ui.native: false` (browser mode) the default, keep native and document it, or block it outside the app (Edge policy or a firewall rule).
+
+**Next:** the user walks through the app by hand (drop files in, watch them index, ask, open a citation, inspect the trace, export); then Phase 6.
 
 The 27 personal reference answers were verified against the source pages (2026-10-12); none needed changing, so the personal-set numbers in RESULTS.md stand.
 
@@ -58,6 +63,11 @@ The 27 personal reference answers were verified against the source pages (2026-1
 | The user's documents and questions must never reach the public repo | `eval/datasets/personal*` is gitignored, tests use synthetic Hebrew, and agent commits were reviewed for quoted content |
 | Worktree agents start from the session's first commit, not current `main` | Every agent prompt starts with `git merge --ff-only main` |
 | Eval artifact: a not-found answer's closest matches were counted as "retrieved", which made the loop look perfect on the personal set | The runner now scores only passages that passed grading |
+| NiceGUI binds `0.0.0.0` outside native mode, which would expose the app (and your documents) to the LAN | `ui.run(host="127.0.0.1")` always; checked live that the LAN address can't connect |
+| `uv add` re-syncs without the `rerank` extra and uninstalls torch | Run `uv sync --extra rerank` after adding dependencies (in every agent prompt) |
+| NTFS updates access times about hourly, so the startup scan's reads came back as "modified" events and the watcher resubmitted every file (seen live: 72 events on an unchanged vault) | The watcher records existing files' (mtime, size) on start and only submits real changes |
+| The native window's WebView2 connects to Microsoft servers by itself | Background networking off + dead proxy; the main process still connects. Open decision, see the top of this file |
+| Merged UI tests waited for "any chip" to mean "the answer arrived", but the header's privacy badge is a chip too | Tests use the citation chips' marker |
 
 ## Redesign considerations (not scheduled; each needs a measurement before it lands)
 
@@ -99,7 +109,7 @@ uv run vaultmind eval sweep eval/results/<run>/<config>__cuad.jsonl -d cuad   # 
 
 Verified on the dev machine (Windows 11, RTX 5070 Ti 16 GB, Ollama with `qwen3:14b` + `qwen3-embedding:0.6b`):
 
-- 456 unit tests pass (fakes, no GPU). 6 live tests pass with `uv run pytest -m ollama` (they load the reranker too).
+- 628 unit tests pass (fakes, no GPU). 6 live tests pass with `uv run pytest -m ollama` (they load the reranker too).
 - Ingesting 3 Markdown docs → 27 chunks in about 2 s. Re-running skips unchanged files.
 - `ask` answers in about 1.5 s (median) with warm models and `think: false`, plus ~7 s per invocation to load the reranker. It cites the file and section. For out-of-corpus questions it answers "I couldn't find this in your documents." and lists the closest matches. Passages with instruction-like text get a `[!]` warning.
 - ruff, ruff format, and mypy `--strict` are clean. CI (`.github/workflows/ci.yml`) runs the same checks plus unit tests.
@@ -133,7 +143,13 @@ Verified on the dev machine (Windows 11, RTX 5070 Ti 16 GB, Ollama with `qwen3:1
 | `eval/configs/*.yaml` | Ablation configs (partial YAML over the defaults) | Phase 3: baseline, hybrid, rerank, hybrid_rerank, hybrid_rerank_children (all pinned to `loop: false`). Phase 4: linear, loop_variants_rewrite, loop_no_variants, loop_no_rewrite, loop_no_guard, loop_contradictions, loop_groundedness |
 | `eval/adversarial.py` + `eval/fixtures/adversarial/` | 4 poisoned contracts (override, fake system block, exfiltration, subtle) + 3 contradiction pairs; `install_adversarial()` | Fictional names, `.invalid` domains. Payload codes like `ZORBLAX-4417` must never appear in answers |
 | `eval/cuad.py` | CUAD importer: seeded contract subset -> `vault/cuad/*.txt`, questions that name their contract, spans as `evidence`, absent clauses as unanswerable | Owns `vault/cuad/`: stale `.txt` files there are removed on re-import |
-| `cli.py` | `config`, `doctor`, `pull-reranker`, `ingest`, `ask [--trace]`, `trace`, `eval import-cuad`, `eval install-adversarial`, `eval run`, `eval sweep` | Forces `errors="replace"` on stdout (Windows cp1255 console) |
+| `app/engine.py` | `Engine`: models, index and stores loaded once; `ask(chat_id, question)` streams tokens then the stored `ChatMessage` (run + exchange saved; nothing on error); `start_ingest` (queue + scan + watcher); `warm_up` | One question at a time (lock) |
+| `ingest/queue.py`, `ingest/watcher.py` | `IngestQueue` (one worker thread, `JobEvent`s queued/indexing/ready/failed/removed, survives Ollama errors), `VaultWatcher` (watchdog, debounced, ignores temp/hidden files) | `queued` is emitted on the caller's thread, the rest on the worker |
+| `store/chats.py` | `ChatStore`: chats + messages (migration 3); assistant messages keep sources, abstention, contradictions, unsupported claims and the run id | Auto-titles a chat from its first question |
+| `app/export.py`, `app/highlight.py`, `app/privacy.py`, `app/settings.py` | Markdown/PDF export (Hebrew RTL, system font with Hebrew glyphs); PDF page render with the passage highlighted in memory (and a highlighted copy for the system viewer); connection check of the app's process tree; `local.yaml` overrides + restart/reindex classification | Highlighting found 147/151 real chunks (117/121 Hebrew) |
+| `ui/` | NiceGUI: `app.py` (shell, startup, WebView2 lockdown), `state.py` (`AppState`, `off_loop`), `chat.py`, `trace_view.py`, `citation_view.py`, `library.py`, `settings_page.py`, `badge.py` | Only `ui/` imports NiceGUI and nothing imports `ui/` (`tests/test_layering.py`) |
+| `agent/trace_text.py` | One-line trace summaries shared by the CLI and the app | |
+| `cli.py` | `config`, `doctor`, `pull-reranker`, `ingest`, `ui [--browser]`, `ask [--trace]`, `trace`, `eval import-cuad`, `eval install-adversarial`, `eval run`, `eval sweep` | Forces `errors="replace"` on stdout (Windows cp1255 console) |
 
 Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `vaultmind.sqlite`. Both are gitignored.
 
@@ -186,6 +202,14 @@ Load the models once at startup.
 One-command install, an optional Windows build, a demo GIF, the final results table and write-up in the README, and CV bullets from RESULTS.md.
 
 ## Known limitations (from the agents' reports and testing)
+
+- **App (Phase 5):**
+  - The index has no locking: a question asked in the instant a file is being re-indexed (between dropping its old chunks and adding the new ones) can miss that file. Not seen in a live stress test (12 questions during re-indexing).
+  - Library "Remove" deletes the file from the vault folder permanently (no recycle bin).
+  - During a folder scan the header says "Indexing 1 file": only the current file is known.
+  - Settings doesn't expose `agent.loop` or `chunking.*`.
+  - Highlighting misses some math-heavy slides (4 of 151 real chunks) and marks whole lines for right-to-left matches.
+  - The privacy badge covers the app's process tree only; Ollama is a separate process.
 
 - **Parsing:** code fences are tracked per PDF page; setext (`===`/`---`) headings aren't recognized; sentence splitting doesn't know abbreviations; PDF headings are only detected when their font is larger. UTF-8 only, no OCR (Phase 6).
 - **Index:** exact vector scan with no ANN index (fine at this scale). `add` writes parents and children in two steps, not one transaction.

@@ -115,19 +115,21 @@ Goal: a polished app that calls the engine directly, with no API layer.
 
 Dependencies: `uv add "nicegui[native]" watchdog psutil`
 
-- [ ] `vaultmind ui` opens a native window (`ui.run(native=True)`).
-- [ ] **Chat:** streamed answers; citation chips that open the source PDF at the right page; conversation history saved in SQLite.
-- [ ] **Trace panel:** a collapsible timeline under each answer showing queries, passage scores, rewrites, and per-step timing.
-- [ ] **Library:** drag-and-drop upload; per-file status (queued / indexing / ready / failed with reason); re-index and remove actions.
-- [ ] **Live folder watching:** a watchdog observer feeds the ingestion job queue in the background, so the UI never blocks.
-- [ ] **Settings:** watched folders, models, and retrieval/agent switches (written to `config/local.yaml`).
+- [x] `vaultmind ui` opens a native window (`ui.run(native=True)`).
+- [x] **Chat:** streamed answers; citation chips that open the source PDF at the right page; conversation history saved in SQLite.
+- [x] **Trace panel:** a collapsible timeline under each answer showing queries, passage scores, rewrites, and per-step timing.
+- [x] **Library:** drag-and-drop upload; per-file status (queued / indexing / ready / failed with reason); re-index and remove actions.
+- [x] **Live folder watching:** a watchdog observer feeds the ingestion job queue in the background, so the UI never blocks.
+- [x] **Settings:** watched folders, models, and retrieval/agent switches (written to `config/local.yaml`).
 - [ ] Optional: an **Eval** page that runs the test set and shows the comparison table in-app.
-- [ ] Load models at startup so the first question isn't slow.
-- [ ] **Highlighted citations:** clicking a citation opens the PDF at the page with the supporting text highlighted (PyMuPDF `search_for` on the cited child's text + a highlight annotation on a temp copy; never modify the user's file). Markdown/text sources scroll to and highlight the passage.
-- [ ] **Export:** save an answer or a whole chat as Markdown or PDF, with its citations listed as file + page.
-- [ ] **Privacy badge:** a status indicator that checks the app's own connections (`psutil.Process().net_connections()`) every few seconds and shows "localhost only". It turns red and names the remote address if any non-loopback connection appears.
+- [x] Load models at startup so the first question isn't slow.
+- [x] **Highlighted citations:** clicking a citation opens the PDF at the page with the supporting text highlighted (PyMuPDF `search_for` on the cited child's text + a highlight annotation on a temp copy; never modify the user's file). Markdown/text sources scroll to and highlight the passage.
+- [x] **Export:** save an answer or a whole chat as Markdown or PDF, with its citations listed as file + page.
+- [x] **Privacy badge:** a status indicator that checks the app's own connections (`psutil.Process().net_connections()`) every few seconds and shows "localhost only". It turns red and names the remote address if any non-loopback connection appears.
 
 **Done when:** a new user can drop files in, watch them index, ask a question, and inspect the trace without touching the CLI.
+
+> Status (2026-10-12): built and merged; the app runs on the real vault with the real models. Open: the native window's WebView2 contacts Microsoft by itself (the badge shows it), see STATUS.md. Not yet walked through by hand in the window.
 
 ### Parallel build (two waves)
 
