@@ -60,6 +60,7 @@ class AgentConfig(_Section):
     injection_guard: bool = True
     detect_contradictions: bool = True  # runs only when sources span 2+ files
     groundedness_check: bool = False
+    smalltalk: bool = True  # nothing passed on an unclassified message: one short reply
 
 
 class IngestConfig(_Section):

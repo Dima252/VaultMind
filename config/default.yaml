@@ -38,6 +38,9 @@ agent:
   injection_guard: true       # passages go in delimited data blocks; instruction-like text is flagged
   detect_contradictions: true   # one LLM call when sources span 2+ files: report conflicts, cite both
   groundedness_check: false     # one LLM call: flag answer claims their cited passage doesn't support
+  smalltalk: true               # nothing passed grading and analyze didn't run (a chat's first
+                                # message): one short reply, so "hi" gets a greeting; factual
+                                # questions still get not-found with the closest matches
 
 ingest:
   watch: true               # index changes in paths.vault_dir while the app runs

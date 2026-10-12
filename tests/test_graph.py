@@ -267,6 +267,40 @@ def test_direct_path_skips_retrieval(store: tuple[ChunkIndex, Registry]) -> None
     assert "Sources" not in "\n".join(m["content"] for m in llm.calls[1])
 
 
+def test_unclassified_greeting_with_no_match_gets_a_reply(
+    store: tuple[ChunkIndex, Registry],
+) -> None:
+    llm = LLM(["Hello! Ask me about your documents."])
+    result = _run(store, llm, _cfg(agent={"rewrite": False}), "hi")
+    assert _nodes(result) == ["analyze", "retrieve", "grade", "direct"]
+    assert result.answer == "Hello! Ask me about your documents."
+    assert not result.abstained
+    assert result.sources == []
+    assert "closest" not in _data(result, "direct")
+
+
+def test_unclassified_question_with_no_match_is_not_found_with_closest(
+    store: tuple[ChunkIndex, Registry],
+) -> None:
+    embedder = AliasEmbedder({QUESTION: GOV})
+    result = _run(store, LLM([NOT_FOUND]), _loop_cfg(rewrite=False), embedder=embedder)
+    assert _nodes(result) == ["analyze", "retrieve", "grade", "direct"]
+    assert result.abstained
+    assert [s.chunk_id for s in result.sources] == [GOV.id]
+    assert _data(result, "direct")["closest"] == [s.label for s in result.sources]
+
+
+def test_classified_question_with_no_match_skips_the_reply(
+    store: tuple[ChunkIndex, Registry],
+) -> None:
+    embedder = AliasEmbedder({QUESTION: GOV})
+    history: list[Message] = [{"role": "user", "content": "earlier"}]
+    llm = LLM([_analysis()])
+    result = _run(store, llm, _loop_cfg(rewrite=False), embedder=embedder, history=history)
+    assert _nodes(result) == ["analyze", "retrieve", "grade", "not_found"]
+    assert len(llm.calls) == 1  # analyze only
+
+
 # --- rewrite loop --------------------------------------------------------------------------
 
 
@@ -328,7 +362,7 @@ def test_rewrites_exhausted_gives_not_found_with_closest(
 def test_rewrite_off_goes_straight_to_not_found(store: tuple[ChunkIndex, Registry]) -> None:
     embedder = AliasEmbedder({QUESTION: GOV})
     llm = LLM([])
-    result = _run(store, llm, _loop_cfg(rewrite=False), embedder=embedder)
+    result = _run(store, llm, _loop_cfg(rewrite=False, smalltalk=False), embedder=embedder)
     assert _nodes(result) == ["analyze", "retrieve", "grade", "not_found"]
     assert llm.calls == []
     assert result.abstained
@@ -520,7 +554,7 @@ def test_groundedness_skipped_on_abstention(
     monkeypatch.setattr(nodes, "check_groundedness", lambda *a, **kw: [])
     cfg = _cfg(agent={"groundedness_check": True})
     assert _nodes(_run(store, LLM([NOT_FOUND]), cfg)) == ORDER_HAPPY
-    loop = _loop_cfg(groundedness_check=True, rewrite=False)
+    loop = _loop_cfg(groundedness_check=True, rewrite=False, smalltalk=False)
     embedder = AliasEmbedder({QUESTION: GOV})
     assert _nodes(_run(store, LLM([]), loop, embedder=embedder))[-1] == "not_found"
 
@@ -580,7 +614,8 @@ def test_tokens_stream_before_the_node_finishes(store: tuple[ChunkIndex, Registr
 
 def test_not_found_is_yielded_as_text(store: tuple[ChunkIndex, Registry]) -> None:
     embedder = AliasEmbedder({QUESTION: GOV})
-    events = _stream(store, LLM([]), _loop_cfg(rewrite=False), embedder=embedder)
+    cfg = _loop_cfg(rewrite=False, smalltalk=False)
+    events = _stream(store, LLM([]), cfg, embedder=embedder)
     assert events[0] == NOT_FOUND
     assert isinstance(events[-1], AgentResult)
 
