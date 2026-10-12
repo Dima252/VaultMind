@@ -129,6 +129,31 @@ Dependencies: `uv add "nicegui[native]" watchdog psutil`
 
 **Done when:** a new user can drop files in, watch them index, ask a question, and inspect the trace without touching the CLI.
 
+### Parallel build (two waves)
+
+The app splits into services with no UI code (testable with fakes) and NiceGUI pages on top. Services go first, so the page agents build on working code, not stubs.
+
+- **Contracts (on `main`):** deps, `ingest:` + `ui:` config sections, registry migration 3 (`chats`, `messages`), `ingest.pipeline.forget_file`, `app/engine.py` (`Engine`: models loaded once, `ask(chat_id, question)` streams and stores the exchange, `start_ingest`), stubs for every wave 1 module, and `tests/test_layering.py` (only `ui/` imports NiceGUI; nothing imports `ui/`).
+- **Wave 1: services, 3 agents in parallel** (prompts in `scripts/agents/prompts/`):
+
+  | Agent | Files | Prompt |
+  |---|---|---|
+  | queue | `ingest/queue.py` (`IngestQueue`), `ingest/watcher.py` (`VaultWatcher`) | `queue.md` |
+  | chats | `store/chats.py` (`ChatStore`), `app/export.py` (Markdown + PDF) | `chats.md` |
+  | citations | `app/highlight.py`, `app/privacy.py`, `app/settings.py` | `citations.md` |
+
+- **Merge + integration:** `Engine` tests with fakes; a live check of `Engine` with real models and a watched folder.
+- **Wave 2: pages, 2 agents in parallel**, after a shell commit on `main` (`ui/app.py`: window, header with the privacy badge, navigation, engine startup; the `vaultmind ui` command):
+
+  | Agent | Files |
+  |---|---|
+  | chat UI | `ui/chat.py` (streamed chat, chat list, citation chips, export), `ui/trace_view.py`, `ui/citation_view.py` |
+  | library UI | `ui/library.py` (drag-and-drop, per-file status, re-index/remove), `ui/settings_page.py`, `ui/badge.py` |
+
+- **Final integration:** run the app against the real vault and models, walk through the "done when" scenario, record findings in STATUS.md.
+
+Rules for the UI: always `ui.run(host="127.0.0.1", reload=False, show_welcome_message=False)` (NiceGUI binds `0.0.0.0` by default outside native mode), no `on_air`, no CDN assets. Blocking engine calls run off the event loop (`run.io_bound`); worker-thread callbacks hop back to the loop.
+
 ## Phase 6: Hardening + privacy
 
 Dependencies: `uv add --dev pytest-socket`

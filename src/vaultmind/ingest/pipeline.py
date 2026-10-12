@@ -117,5 +117,16 @@ def ingest_path(
     return summary
 
 
+def forget_file(path: Path, *, index: ChunkIndex, registry: Registry) -> bool:
+    """Drop a file's chunks and registry row (it was deleted or moved). False if it wasn't known."""
+    file_id = file_id_for(path)
+    if registry.get(file_id) is None:
+        return False
+    index.delete_file(file_id)
+    registry.remove(file_id)
+    index.refresh_fts()
+    return True
+
+
 def _is_within(path: Path, root: Path) -> bool:
     return path == root or path.is_relative_to(root)

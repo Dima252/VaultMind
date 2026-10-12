@@ -38,3 +38,12 @@ agent:
   injection_guard: true       # passages go in delimited data blocks; instruction-like text is flagged
   detect_contradictions: true   # one LLM call when sources span 2+ files: report conflicts, cite both
   groundedness_check: false     # one LLM call: flag answer claims their cited passage doesn't support
+
+ingest:
+  watch: true               # index changes in paths.vault_dir while the app runs
+  debounce_s: 2.0           # wait for a file to stop changing before indexing it
+
+ui:
+  native: true              # own window (pywebview); false: open the default browser instead
+  port: 8730                # the UI is served on 127.0.0.1 only, never on the network
+  privacy_check_s: 5        # how often the privacy badge checks the app's connections

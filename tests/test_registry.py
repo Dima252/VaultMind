@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -169,3 +170,10 @@ def test_concurrent_set_status(registry: Registry) -> None:
 
     assert errors == []
     assert all(r.status == "ready" and r.error is None for r in registry.all())
+
+
+def test_migration_3_creates_chat_tables(tmp_path: Path) -> None:
+    Registry(tmp_path / "db.sqlite").close()
+    with closing(sqlite3.connect(tmp_path / "db.sqlite")) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"chats", "messages"} <= tables

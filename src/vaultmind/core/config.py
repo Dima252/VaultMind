@@ -62,6 +62,17 @@ class AgentConfig(_Section):
     groundedness_check: bool = False
 
 
+class IngestConfig(_Section):
+    watch: bool = True  # index changes in paths.vault_dir while the app runs
+    debounce_s: float = Field(default=2.0, ge=0)  # wait for a file to stop changing first
+
+
+class UIConfig(_Section):
+    native: bool = True  # own window (pywebview); false: open the default browser instead
+    port: int = Field(default=8730, gt=0, lt=65536)  # served on 127.0.0.1 only
+    privacy_check_s: float = Field(default=5.0, gt=0)  # privacy badge refresh interval
+
+
 class Config(_Section):
     paths: PathsConfig = PathsConfig()
     ollama: OllamaConfig = OllamaConfig()
@@ -69,6 +80,8 @@ class Config(_Section):
     chunking: ChunkingConfig = ChunkingConfig()
     retrieval: RetrievalConfig = RetrievalConfig()
     agent: AgentConfig = AgentConfig()
+    ingest: IngestConfig = IngestConfig()
+    ui: UIConfig = UIConfig()
 
 
 def resolve_config_path(path: Path | None = None) -> Path | None:

@@ -5,7 +5,7 @@ import pytest
 
 from vaultmind.core.config import Config
 from vaultmind.core.models import file_id_for
-from vaultmind.ingest.pipeline import IngestSummary, ingest_path, iter_files
+from vaultmind.ingest.pipeline import IngestSummary, forget_file, ingest_path, iter_files
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
 
@@ -139,3 +139,14 @@ def test_ingested_text_is_keyword_searchable(
     index, _ = store
     [hit] = index.fts_search("bravo", k=5)
     assert "Bravo is the second." in hit.chunk.text
+
+
+def test_forget_file_drops_chunks_and_record(
+    vault: Path, store: tuple[ChunkIndex, Registry]
+) -> None:
+    run(vault, store)
+    index, registry = store
+    assert forget_file(vault / "a.md", index=index, registry=registry) is True
+    assert index.count() == 1
+    assert [r.path.name for r in registry.all()] == ["b.txt"]
+    assert forget_file(vault / "a.md", index=index, registry=registry) is False

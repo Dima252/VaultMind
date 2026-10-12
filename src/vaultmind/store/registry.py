@@ -42,6 +42,25 @@ _MIGRATIONS: dict[int, str] = {
         PRIMARY KEY (run_id, seq)
     );
     """,
+    3: """
+    CREATE TABLE chats (
+        id         TEXT PRIMARY KEY,
+        title      TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX chats_updated ON chats (updated_at);
+    CREATE TABLE messages (
+        chat_id    TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
+        seq        INTEGER NOT NULL,
+        role       TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        content    TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        run_id     TEXT REFERENCES runs (id) ON DELETE SET NULL,
+        meta       TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (chat_id, seq)
+    );
+    """,
 }
 SCHEMA_VERSION = max(_MIGRATIONS)
 
