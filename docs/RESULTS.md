@@ -243,6 +243,18 @@ CUAD and personal come from run `20261012-031825`, adversarial from `20261012-03
 
 **Bottom line for Phase 4:** the agent loop, as specified, didn't improve answers on these datasets. The gains so far come from retrieval (Phase 3). The remaining errors are on the generation side: the model refuses when a clause is worded differently from the question, or stretches a related clause. Ideas that could give the loop a real job (grading against several phrasings, a second pass when the model abstains despite good passages, a smaller model for side calls, stronger eval sets) are listed under "Redesign considerations" in [STATUS.md](STATUS.md).
 
+## Phase 5.5: document agent (planned, not measured yet)
+
+What this section will hold once the work lands (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):
+
+- **Router accuracy** on labeled requests (English and Hebrew).
+- **Task success per type** (list, summarize, compare, extract, transform, multi-step, clarify) from a key-facts judge, averaged over 3 runs.
+- **Citation precision:** the share of cited sections that a tool actually read.
+- **Open loop:** valid tool-call rate, steps per task, how often the recipe fallback was used.
+- **Injection through tools:** documents that try to trigger a tool call.
+- **Latency per task type** against the targets: lookup ≤ 2 s, list < 1 s, cached summary < 1 s, new summary first token < 10 s, compare < 15 s, open tasks < 30 s.
+- **Regression gate:** CUAD and personal lookup correctness, abstention and latency must match the Phase 4 default above, within noise.
+
 ## Credits
 
 CUAD: Dan Hendrycks, Collin Burns, Anya Chen and Spencer Ball, *CUAD: An Expert-Annotated NLP Dataset for Legal Contract Review*, NeurIPS 2021. The Atticus Project, licensed CC BY 4.0. VaultMind uses a 25-contract subset. `eval/datasets/cuad.jsonl` contains clause excerpts from CUAD under the same license; the full contracts are not stored in this repository.

@@ -3,9 +3,9 @@
 **A fully local, privacy-first AI assistant for your own documents.**
 Drop in PDFs, Markdown or text files and ask questions about them. VaultMind finds the relevant passages, checks that they actually answer the question, retries with a better search when they don't, and answers with citations, all on your own machine. Nothing is sent to a cloud API.
 
-> 🚧 **Status: in development.** The engine works from the command line: ingestion (including Hebrew PDFs), hybrid retrieval with reranking, the agent loop with an injection guard and a contradiction check, traces, and the evaluation harness. The desktop app is next. See [status](docs/STATUS.md), [results](docs/RESULTS.md) and the [execution plan](docs/EXECUTION_PLAN.md).
+> 🚧 **Status: in development.** Working today: ingestion (including Hebrew PDFs), hybrid retrieval with reranking, the corrective loop with an injection guard and a contradiction check, traces, the evaluation harness, and the app (`vaultmind ui`). It answers lookup questions well, but can't yet summarize, list, compare or plan multi-step work. Turning it into a full document agent is the next phase ([roadmap](#roadmap-from-search-to-document-agent)). See [status](docs/STATUS.md), [results](docs/RESULTS.md) and the [execution plan](docs/EXECUTION_PLAN.md).
 
-<!-- TODO(Phase 7): demo GIF here, showing the agent rejecting weak chunks, rewriting the query, and answering with citations -->
+<!-- TODO(Phase 7): demo GIF here, showing the agent planning a task, reading documents step by step, and answering with citations -->
 
 ## Why
 
@@ -56,6 +56,33 @@ flowchart TD
 
 The loop is a [LangGraph](https://github.com/langchain-ai/langgraph) state machine. Grading uses reranker scores rather than one LLM call per passage, which makes it faster and more reliable on local hardware. LLM calls are reserved for query analysis, rewriting, and the final answer.
 
+### Roadmap: from search to document agent
+
+Today every message is a lookup: search, keep the best passages, answer. That's why "summarize this document", "what documents do I have?" and "compare X with Y" fail. The next phase turns VaultMind into a local document agent: a ReAct loop with human-in-the-loop, behind fast paths so simple questions stay fast.
+
+```mermaid
+flowchart TD
+    Q[Message + chat memory<br/>focus documents, earlier results] --> P[Plan and route<br/>task, documents, short plan]
+    P -- chat / rework last answer --> R
+    P -- lookup --> L[Corrective RAG<br/>today's loop, unchanged] --> R
+    P -- list / summarize / compare / extract --> C[Recipe<br/>fixed tool sequence] --> R
+    P -- open, multi-step --> T[Reason<br/>local tool calls]
+    T --> G[Tool gateway<br/>validate, resolve documents, budget, guard]
+    G -- read-only --> X[Run tool]
+    G -- write or expensive --> H[Ask you<br/>approve / edit / reject]
+    H -- approved --> X
+    H -- rejected: feedback --> T
+    X -- observation --> T
+    T -- done --> R[Respond<br/>verify citations, stream]
+```
+
+- **Document cards** written at ingest (type, summary, outline, key dates and entities), so the agent knows your library and can work with whole documents within a local context window.
+- **Local tools**: list documents, outline, read pages or sections, search one file, summarize, extract into a table, calculate. All plain Python over the local index. Writes need your approval, and the agent has no delete tool.
+- **It asks instead of guessing** when a request is ambiguous ("which syllabus?") or a job is long.
+- **Measured** like everything else: a new task eval set (half Hebrew), with lookup quality and latency held where they are today.
+
+Details and milestones: [execution plan, Phase 5.5](docs/EXECUTION_PLAN.md).
+
 ## Tech stack
 
 | Layer | Choice | Why |
@@ -97,7 +124,11 @@ uv run vaultmind ingest                      # index new/changed files, forget d
 uv run vaultmind ask "What does the contract say about termination?"
 ```
 
-<!-- TODO(Phase 5): `uv run vaultmind ui` -->
+Or use the app, which watches `vault/` and indexes changes as they happen:
+
+```bash
+uv run vaultmind ui          # opens in your browser on 127.0.0.1 (use --native for its own window)
+```
 
 ## Configuration
 
@@ -153,7 +184,7 @@ tests/      unit tests and fake providers
 
 ## Privacy
 
-VaultMind makes network connections only to the local Ollama daemon (`127.0.0.1`). The one exception is downloading models on first setup. A test suite runs the full pipeline with all non-localhost connections blocked to keep this guarantee true.
+VaultMind makes network connections only to the local Ollama daemon (`127.0.0.1`). The one exception is downloading models on first setup. The app serves its UI on `127.0.0.1` only, refuses requests from other websites, and shows a live badge that checks its own connections. A test that runs the full pipeline with all non-localhost connections blocked is planned for the hardening phase.
 
 ## License
 

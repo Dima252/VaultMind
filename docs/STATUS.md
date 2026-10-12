@@ -1,6 +1,6 @@
 # VaultMind: Status and Handoff
 
-_Last updated: 2026-10-12, end of day (Phase 5 built; Phase 5.5 agentic tasks planned next)._
+_Last updated: 2026-10-12, end of day (Phase 5 built; Phase 5.5 re-planned as a full document agent: planner, tools, ReAct loop, human-in-the-loop)._
 
 This is the starting point for anyone (human or agent) continuing the work. Read it after `CLAUDE.md`. The full roadmap with checkboxes is in [EXECUTION_PLAN.md](EXECUTION_PLAN.md).
 
@@ -14,7 +14,7 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 | 3. Retrieval quality | ✅ Done. Hybrid + rerank + child chunks are the new default; ablations in [RESULTS.md](RESULTS.md) |
 | 4. Agent loop + safety | ✅ Done. LangGraph loop, injection guard, contradiction and groundedness checks, traces. Measured in [RESULTS.md](RESULTS.md); only the parts that earned their keep are on by default |
 | 5. Desktop app | ✅ Built (NiceGUI, `vaultmind ui`). Opens as a browser tab by default. Hand walkthrough partly done |
-| 5.5 Agentic tasks | ⬜ **Next.** Summarize, list, compare, extract: today it can only look things up (see below) |
+| 5.5 Document agent | ⬜ **Next.** Planned (M0–M5 in EXECUTION_PLAN.md): document cards, planner/router, tools, recipes, ReAct loop, human-in-the-loop. Today it can only look things up (see below). Three decisions open |
 | 6–7 | ⬜ Not started |
 
 ## Where we stopped (end of day, 2026-10-12)
@@ -44,15 +44,25 @@ Asking it to summarize, list or compare fails. Live check with the real models (
 
 The "agent" today is a corrective retrieval loop (rewrite, check, cite), and Phase 4 showed even its retrieval steps add little. It has no tools and doesn't decide what kind of task it was given. **Fixing this is the next phase (5.5 in EXECUTION_PLAN.md) and comes before hardening:** it's what the product is supposed to be.
 
+**The plan (2026-10-12):** turn it into a local document agent that works like a cloud assistant over your files: a ReAct loop with human-in-the-loop (plan, reason, call tools, observe, ask when unsure), but **behind fast paths**. A planner call classifies every message (`chat | transform | lookup | list | summarize | compare | extract | generate | open`):
+- lookups keep today's measured corrective-RAG graph (~1.5 s, ~0.80 CUAD correctness);
+- common tasks run as fixed tool sequences (recipes), which a 14B model handles reliably;
+- only open, multi-step tasks enter the tool-calling loop (qwen3 native tool calls, thinking on, bounded steps).
+
+The biggest lever is a **document card** per file, written at ingest (type, language, summary, outline, key entities and dates, per-section summaries): it lets the agent know the library, resolve "the syllabus" to a file, and answer whole-document questions without fitting the whole document into `num_ctx`. Tools are read-only; writes (save a note, export) need approval; the agent has no delete tool. Milestones M0–M5, the eval set and latency targets are in EXECUTION_PLAN.md.
+
 ### What's left, in order
 
-1. **Phase 5.5: agentic tasks** (new; plan in EXECUTION_PLAN.md). A task router plus local tools: list documents, read/outline a document, scoped search, summarize (map-reduce over a document's sections, cached), compare, extract across documents. Measured with new eval items. Needs one decision first (below).
+1. **Phase 5.5: document agent** (plan in EXECUTION_PLAN.md). M0 contracts → M1 document cards, tools + gateway, task eval + key-facts judge (parallel) → M2 planner + recipes → M3 ReAct loop + human-in-the-loop → M4 retrieval upgrades → M5 UI. Needs three decisions first (below).
 2. **Finish the hand walkthrough** of the app: drop a PDF in, ask, open a citation, open the trace, export, change a setting. Only the chat page has been tried by hand so far.
 3. **Phase 6: hardening.** Network-blocked test, telemetry audit, launch token (other local programs can use the app today), atomic re-index, Ollama-down recovery, resumable ingestion, edge-case files, secret/PII scanner. OCR needs a decision (new dependency + model download; offline Hebrew handwriting OCR is weak).
 4. **Phase 7: packaging and showcase.** One-command install, demo GIF, results write-up, CV bullets.
-5. **Quality items, any time:** the generation-side fix for refusals with the right passage in context (redesign idea 2 below), a key-facts judge with `eval run --repeat N`, harder follow-up and injection items.
+5. **Quality items, any time:** harder follow-up and injection items. (The generation-side refusal fix, multi-phrasing grading and the key-facts judge are now scheduled in Phase 5.5, M4 and M1.)
 
-**Decision needed for 5.5:** `CLAUDE.md` says "answers cite only graded passages". A summary reads a whole document, so it can't follow that literally. Proposal: summaries and comparisons cite the sections and pages they read; lookups keep the graded-passage rule and the "not found" behavior. A request about a document that doesn't exist still gets "not found".
+**Decisions needed for 5.5 (before M2):**
+1. **Citation rule.** `CLAUDE.md` says "answers cite only graded passages". A summary reads a whole document, so it can't follow that literally. Proposal: summaries, comparisons and extractions cite the sections and pages they read; lookups keep the graded-passage rule and "not found". A request about a document that doesn't exist still gets "not found".
+2. **General knowledge.** Keep strict "only my documents" (today), or add an optional, clearly labeled world-knowledge mode answered by the local model (still offline). Recommended: a switch, off by default.
+3. **Document cards at ingest.** ~10–60 s of background GPU time per document, once, cached by file hash. Recommended: on, as a switch (`ingest.enrich`).
 
 **To resume:** `uv run vaultmind doctor`, then `uv run vaultmind ui`. Ollama must be running (`%LOCALAPPDATA%\Programs\Ollama\ollama.exe` if it isn't on PATH).
 
@@ -106,7 +116,9 @@ The 27 personal reference answers were verified against the source pages (2026-1
 | First hand test: the chat column was ~230 px wide, the answer and chips cut off, the user's own message invisible | NiceGUI's sub-pages container shrink-wraps its page; scroll-area content could outgrow the window; a Tailwind color that doesn't exist. Fixed and checked with headless Edge screenshots at 600 and 1280 px |
 | Merged UI tests waited for "any chip" to mean "the answer arrived", but the header's privacy badge is a chip too | Tests use the citation chips' marker |
 
-## Redesign considerations (not scheduled; each needs a measurement before it lands)
+## Redesign considerations (each needs a measurement before it lands)
+
+Ideas 1–4 are now scheduled in Phase 5.5 (1–2 in M4, 3 in the planner work, 4 in M1); idea 5 is superseded by the document-agent plan.
 
 1. **Grade against more than one phrasing.** Today every passage is scored against the single standalone question, which is why rewrites and variants can't help. A better query finds new candidates, but the right passage is still scored against the original wording. Instead:
    - score each passage by its best score over the question and its variants;
@@ -124,7 +136,7 @@ The 27 personal reference answers were verified against the source pages (2026-1
    - The injection set is at its ceiling (8/8 even without the guard), so the guard's value currently rests on a targeted test. Add payloads in the same chunk as the clause being asked about.
    - Add harder follow-ups (pronoun-only) and more multi-hop items.
    - Switch the judge to a key-facts checklist, and average 2–3 repeated runs per config (`eval run --repeat N`), so 5-point effects can be decided.
-5. **Keep LangGraph for now.** With variants and rewrites off, the graph is nearly linear. It still pays for itself in streaming, per-node traces and the switches the eval needs. Don't re-architect before Phase 5.
+5. **Keep LangGraph.** With variants and rewrites off, today's graph is nearly linear, but it pays for itself in streaming, per-node traces and the switches the eval needs. Phase 5.5 grows it instead of replacing it: a planner/router in front, the current lookup graph reused as one path, a tool loop with `interrupt()` for human-in-the-loop and a local SQLite checkpointer.
 
 **Eval corpus (2026-10-12):** CUAD's `data.zip` is copied to `eval/corpora/cuad/` (gitignored, 18 MB, from the `../cuad` repo). `uv run vaultmind eval import-cuad` writes 25 contracts to `vault/cuad/` and `eval/datasets/cuad.jsonl`; the same seed always gives the same subset. Ingest takes about 20 s. All 12 unanswerable items were checked by hand against the contract text (two bad labels found and fixed via `RELATED` categories in `eval/cuad.py`). The full CUAD release with the 510 original PDFs is at `eval/corpora/cuad/CUAD_v1.zip` (md5 verified) for the optional txt-vs-PDF comparison. CUAD is CC BY 4.0: credit it (Hendrycks et al., NeurIPS 2021, The Atticus Project) in `RESULTS.md` and the README.
 
@@ -227,8 +239,8 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
 
 Load the models once at startup.
 
-### Phase 5.5: Agentic tasks (next)
-Task router, document resolver, local tools (list, outline, read, scoped search), summarize (map-reduce, cached), compare, extract; new eval items. Full plan in EXECUTION_PLAN.md. Needs the citation-rule decision above.
+### Phase 5.5: Document agent (next)
+ReAct with human-in-the-loop behind fast paths: document cards at ingest, working memory per chat, a planner/router, tools behind a validating gateway (list, card, outline, read, scoped search, summarize, extract, calc; writes need approval; no delete), recipes for list/summarize/compare/extract/generate, an open tool loop for multi-step tasks, clarify/approve via `interrupt()`, retrieval upgrades (multi-phrasing grading, query translation, refusal second pass), a live step list in the UI, and ~60 new eval items (half Hebrew). Milestones M0–M5 in EXECUTION_PLAN.md. Needs the three decisions above.
 
 ### Phase 6: Hardening
 - Launch token, so other programs on the machine can't use the app (other websites are already refused).

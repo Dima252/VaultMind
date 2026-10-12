@@ -12,7 +12,7 @@ The order matters. A plain baseline and the eval harness come **before** any of 
 | 3 | Retrieval quality: hybrid, rerank, small-to-big | M |
 | 4 | Agentic corrective loop + traces | M |
 | 5 | Desktop UI + live folder watching | L |
-| 5.5 | Agentic tasks: summarize, list, compare, extract | M |
+| 5.5 | Document agent: planner, tools, ReAct loop, human-in-the-loop | L |
 | 6 | Hardening + privacy guarantees | M |
 | 7 | Packaging + showcase | S |
 
@@ -157,26 +157,114 @@ The app splits into services with no UI code (testable with fakes) and NiceGUI p
 
 Rules for the UI: always `ui.run(host="127.0.0.1", reload=False, show_welcome_message=False)` (NiceGUI binds `0.0.0.0` by default outside native mode), no `on_air`, no CDN assets. Blocking engine calls run off the event loop (`run.io_bound`); worker-thread callbacks hop back to the loop.
 
-## Phase 5.5: Agentic tasks (summarize, list, compare, extract)
+## Phase 5.5: From search pipeline to document agent
 
-Goal: VaultMind does what was asked, not only lookups. Found in the first hand test (2026-10-12): "summarize X", "what documents do I have" and "compare X and Y" all fail, because every message goes through search → top 5 passages → answer (details in STATUS.md). This phase comes before hardening.
+Goal: VaultMind understands what was asked and does it, the way a cloud assistant like Gemini works over your files, but fully local. Found in the first hand test (2026-10-12): "summarize X", "what documents do I have" and "compare X and Y" all fail, because every message goes through search → top 5 passages → answer (details in STATUS.md). This phase comes before hardening.
 
-Principles: everything stays local; every tool is a plain Python function over the index and registry (no MCP, no network); each new behavior is a config switch the eval can ablate; every step lands in the trace.
+### Why the current agent can't do it
 
-- [ ] **Decision (user):** summaries and comparisons cite the sections and pages they read, instead of "graded passages only" (update `CLAUDE.md`). Lookups keep the current rule and "not found".
-- [ ] **Task router:** the analyze call always runs and returns `task: lookup | summarize | compare | list | extract | chat` plus the documents the request names. Today analyze is skipped on first messages to save ~0.5 s; measure the cost again, and try a small model for it (`qwen3:4b`, redesign idea 3). Eval: router accuracy on ~40 labeled requests (English and Hebrew).
-- [ ] **Document resolver:** map "the Workato worksheet" or "the syllabus" to registry files (file name, title, folder; fuzzy match; fall back to the file with the most top search hits). Ambiguous → ask the user which one; none → "not found".
-- [ ] **Tools** (`agent/tools.py`): `list_documents()` (registry: name, folder, pages, status), `document_outline(file)` (section headings), `read_document(file, pages=None)` (parent sections in order), `search(query, file=None)` (today's hybrid + rerank, optionally scoped to one file).
-- [ ] **Summarize:** map-reduce over the document's parent sections within `num_ctx`: one call when the document fits, else summarize groups, then combine. Each point cites its section and page. Cache summaries per (file sha256, model, prompt version) in SQLite, so asking again is instant. Optional: summarize at ingest (config switch), which also helps "which document is about X".
-- [ ] **Compare:** summarize or extract both documents, then one compare call; reuse the contradiction check for conflicting facts.
-- [ ] **Extract across documents** ("all deadlines", "every payment term"): search scoped to each document plus a structured extraction call; a table answer with citations.
-- [ ] **Open tool loop (only if the router isn't enough):** Ollama tool calling with qwen3 over the same tools, bounded steps, every call traced. Start with the router: it's predictable and testable. Add the loop only for requests the router measurably can't handle.
-- [ ] **Eval:** new `tasks.jsonl` items tagged `summarize`, `list`, `compare`, `extract`, with key-point checklists the judge checks (this needs the key-facts judge from the open items). CUAD and personal lookup numbers must not drop.
-- [ ] **UI:** a "Summarize" action per file in the Library; the trace shows the route and tool calls; summary answers show their cited sections as chips.
+- **No task understanding.** Every message takes the lookup path. Analyze is skipped on a chat's first message and, when it runs, only rewrites the question.
+- **No tools.** It can't see the file list, read a whole document, or search inside one file.
+- **No working memory.** "Summarize *it*" or "make that shorter" search again instead of using what it just read or wrote.
+- **No multi-step work.** Compare, extract-across-files and "find X, then check Y" are out of reach.
+- **No idea what a document is about as a whole.** "Which document covers X" fails.
 
-**Done when:** the four failing requests above (and their Hebrew versions) get correct, cited answers; lookup quality and latency hold; the router and each task have measured numbers in RESULTS.md.
+### Target capabilities
 
-Parallel split (same pattern as Phase 5): contracts first (task types in `agent/types.py`, tool signatures, config switches), then agents for (a) router + resolver, (b) tools + summarize/compare/extract nodes, (c) eval items + judge, (d) UI. Graph wiring and the live checks happen on `main`.
+| Capability | Example | Needs |
+|---|---|---|
+| Understand the task | "summarize", "compare", "list", "quiz me" | Planner / router |
+| Know the library | "What documents do I have?", "which one covers X?" | Catalog + a card per document |
+| Read whole documents | Summarize a 40-page syllabus | Read and outline tools, map-reduce, caching |
+| Work across documents | "Every deadline in my courses, as a table" | Extract recipe, search scoped to one file |
+| Reason in several steps | "Which course has the heavier workload, and why?" | ReAct tool loop |
+| Rework its own answer | "shorter", "in Hebrew", "as bullet points" | Transform task (no retrieval) |
+| Ask instead of guessing | "Which syllabus: AI or Workato?" | Human-in-the-loop clarification |
+| Make things from your docs | Study notes, flashcards, an email draft | Generate recipes over what it read |
+| Mixed Hebrew / English | English question about a Hebrew PDF | Query translation, grading against several phrasings |
+
+Not realistic here, by design: a 1M-token context (the budget is ~16–32K on 16 GB of VRAM, hence document cards and map-reduce), web search (forbidden by the offline rule), and cloud-level speed on long tasks (showing each step live makes up for it).
+
+### Architecture: ReAct with human-in-the-loop, behind fast paths
+
+```
+user message
+   |
+[STATE / MEMORY]  chat history, focus documents, earlier tool results, document catalog
+   |
+[PLAN & ROUTE]  one structured call: task, documents named, short plan
+   |-- chat / transform previous answer ----------------------------> [RESPOND]
+   |-- lookup  (today's corrective RAG, unchanged and measured) ----> [RESPOND]
+   |-- recipe: list | summarize | compare | extract | generate -----> fixed tool sequence -> [RESPOND]
+   '-- open task --> [REASON]  qwen3 native tool calls, thinking on <-----------------+
+                        | tool call                                                  | observation
+                        v                                                            |
+                 [TOOL GATEWAY]  validate args, resolve documents, budgets,          |
+                                 de-duplicate, injection guard on observations       |
+                        |                          |                                 |
+                    read-only?             needs approval? --> [HUMAN: approve / edit / reject]
+                        |                          | approved            | rejected = feedback to REASON
+                        '------> [EXECUTE TOOL] ---'-------------------------------------+
+[RESPOND] -> verify (citations point to text that was read; groundedness on long answers) -> stream with chips
+```
+
+**Why fast paths in front of the loop:** each `qwen3:14b` step costs ~1–3 s, and a 14B model's tool calls are less reliable than a frontier model's. Running every lookup through a reasoning loop would turn 1.5 s into 6–10 s and add failure modes on the path that already measures well (~0.80 CUAD correctness). Lookups keep today's graph; recipes make common tasks predictable; the open loop handles what neither covers. Still LangGraph: the graph grows a router and a tool loop, the existing lookup subgraph is reused as is.
+
+### Components
+
+1. **Document understanding at ingest** (the biggest lever). After a file is indexed, a background job writes a **document card**: type (syllabus, contract, worksheet…), language, an ~8-line summary, outline, key entities and dates, and a 1–2 sentence summary per parent section. Stored in SQLite, keyed by (sha256, model, prompt version), so it's computed once. Section summaries are also indexed as searchable rows (light hierarchical retrieval) for "which document talks about X". The file is `ready` before its card is done. Config: `ingest.enrich`.
+2. **State and memory.** Working memory per chat: focus documents (last discussed), tool results so far, the previous answer, so "it" and "that one" resolve. The planner sees the catalog (name + one line) when there are fewer than ~60 files; above that, it searches the cards. Later: user-level memory ("answer in Hebrew", "I'm taking course X"), editable in Settings.
+3. **Planner / router.** Always runs. One structured call returns `task: chat | transform | lookup | list | summarize | compare | extract | generate | open`, the `documents` named (resolved against the catalog with a fuzzy-match check), `language`, a 1–3 step `plan`, and `clarify` when the request is ambiguous. Start on `qwen3:14b` with thinking off (~0.5 s measured for analyze); measure `qwen3:4b` (VRAM is tight with everything loaded).
+4. **Tools** (`agent/tools.py`, plain Python over the index, registry and cards; read-only unless marked):
+
+   | Tool | Backed by |
+   |---|---|
+   | `list_documents(filter?)` | registry + cards |
+   | `document_card(doc)`, `outline(doc)` | cards, parent sections |
+   | `read(doc, pages \| sections)` | `index.get_parents`, in order, within a token budget |
+   | `search(query, doc?)` | today's hybrid + rerank, optionally scoped to one file |
+   | `summarize(doc, focus?)` | map-reduce over sections, cached |
+   | `extract(docs, schema)` | scoped search + one structured call per document, returns rows |
+   | `calc(expr)`, `date_diff(a, b)` | safe arithmetic parser, never `eval` |
+   | `save_note(title, text)`, `export(...)` | **write: needs approval** |
+
+   The agent gets **no delete tool**.
+5. **Tool gateway.** Validates arguments against pydantic schemas; resolves "the Workato worksheet" to a file id (ambiguous → clarify, none → not found); enforces `agent.max_steps` (~6) and a token budget per observation; drops repeated calls; runs every observation through `guard.find_injections` and wraps it as data.
+6. **Recipes** (fixed tool sequences): list → catalog; summarize → card or map-reduce, each point citing section and page; compare → both cards + targeted reads + one compare call, reusing the contradiction check; extract → per-document extraction, answered as a table; generate → study notes, quiz or draft over what was read.
+7. **Open ReAct loop.** Ollama's native `tools=` with qwen3, thinking on for these steps only (`agent.think_open`). Every call is traced. An invalid call gets one repair retry with the validation error, then the closest recipe takes over.
+8. **Human-in-the-loop.** LangGraph `interrupt()` with a local SQLite checkpointer. Three cases: clarify which document was meant (the common one); confirm expensive jobs ("summarize all 12 files, ~3 min?"); approve any write. A rejection goes back to the reasoning step as feedback. `Engine.ask` becomes resumable: it yields an approval/clarify event and `Engine.resume(chat_id, decision)` continues the run.
+9. **Respond.** Citations must point to text a tool actually read. The groundedness check runs on long synthesized answers. "Not found" stays for lookups and for documents that don't exist.
+10. **Retrieval upgrades** (STATUS redesign ideas 1–2): grade each passage by its best score over the question's phrasings; translate the query into the document's language; split two-part questions; a second pass when the model refuses although graded passages exist.
+
+Contract changes (fixed on `main` before agents start): `LLM.chat(messages, tools) -> AssistantTurn(content, tool_calls)` and a `tool` message role in `core/providers.py` (the fake LLM plays back scripted tool calls); `Task`, `Plan`, `ToolCall`, `ToolResult`, `DocCard` types; trace keys for the new nodes in `agent/types.py`; every switch in `core/config.py` + `config/default.yaml`.
+
+Dependencies: `uv add langgraph-checkpoint-sqlite` (local SQLite checkpointer for human-in-the-loop). No other new packages; no new model downloads unless `qwen3:4b` is adopted.
+
+### Tasks
+
+- [ ] **Decisions (user):** (1) summaries, comparisons and extractions cite the sections and pages they read, not graded passages; lookups keep the current rule and "not found" (update `CLAUDE.md`). (2) General knowledge: keep strict "only my documents" or add an optional, clearly labeled local world-knowledge mode (recommended: a switch, off by default). (3) Document cards at ingest: ~10–60 s of background GPU time per document, once (recommended: on, as a switch).
+- [ ] **M0: contracts on `main`.** Provider tool-call protocol + fake, types, config switches, trace keys, checkpointer, `tasks.jsonl` format, stub signatures, agent prompts in `scripts/agents/prompts/` (and the new shared files and dependency in `_rules.md`).
+- [ ] **M1: foundations, three agents in parallel.** (a) Document cards at ingest + card store; (b) tools + gateway; (c) `tasks.jsonl` + key-facts judge + `eval run --repeat N` + router labels.
+- [ ] **M2: planner, recipes, transform.** Wired into the graph with the lookup path untouched.
+- [ ] **M3: ReAct loop, human-in-the-loop, verify.**
+- [ ] **M4: retrieval upgrades** (component 10), each measured on CUAD and personal.
+- [ ] **M5: UI.** A live step list ("Reading Syllabus, pp. 1–12…"), approval and clarify cards, Summarize / Quiz me per file in the Library, the route and tool calls in the trace panel, section chips on summary answers, memory in Settings.
+- [ ] **Eval:** ~60 task items, half in Hebrew: list 5, summarize 10, compare 8, extract 8, transform 8, multi-step 15, ambiguous (should clarify) 6. Metrics: router accuracy, task success (key-facts judge, 3 repeats), citation precision, valid tool-call rate, steps per task, latency per task type, injection items where a document tries to trigger a tool call. CUAD and personal lookup numbers must hold within noise.
+
+| Milestone | Done when |
+|---|---|
+| M0 | Tests and mypy green with fakes |
+| M1 | Each part has unit tests; cards built for the real vault |
+| M2 | The four failing requests in STATUS (and their Hebrew versions) get correct, cited answers; lookups within noise |
+| M3 | Multi-step set measured (success, steps, valid-call rate); approve / reject / clarify work end to end |
+| M4 | Cross-lingual and two-part items improve; CUAD abstention holds |
+| M5 | The hand walkthrough passes |
+
+Latency targets: lookup ≤ 2 s (1.5 s today); list < 1 s; cached summary < 1 s; new summary first token < 10 s; compare < 15 s; open tasks < 30 s with steps shown live.
+
+**Done when:** M0–M5 are done; the router, each task type and the open loop have measured numbers in RESULTS.md; lookup quality and latency hold.
+
+Later (after Phase 6): a local vision model for scanned pages and figures (together with Phase 6 OCR), and long-term user memory.
 
 ## Phase 6: Hardening + privacy
 
@@ -224,6 +312,9 @@ Ruled out: **MCP** (as client or server). A client would let third-party tool se
 | 14B model too slow for a responsive chat | Benchmark 8B vs. 14B in the eval; 8B for analyze/rewrite, 14B for generation |
 | Indexed documents contain prompt-injection text | Passages are delimited as data, flagged at ingest, and measured with `injection` eval items (Phases 2, 4, 6) |
 | An LLM judge for correctness is noisy | Spot-check by hand; report retrieval metrics, which are deterministic, as the headline numbers |
+| A 14B local model makes unreliable tool calls | Lookups and common tasks never go through the open loop (fast paths + recipes); schema-validated arguments, one repair retry, then the closest recipe |
+| Documents can now steer tool choice (injection) | Tools are read-only, writes always need approval, no delete tool, every tool observation goes through the injection guard; eval items where a document tries to trigger a tool call |
+| Whole-document tasks don't fit in `num_ctx` | Document cards at ingest + map-reduce keep correctness independent of context size; a larger `num_ctx` (likely with Ollama's q8 KV cache) is only a speed lever |
 | Scope creep | Out of scope: multi-user, auth, cloud sync, GraphRAG, multi-agent setups |
 
 ## CV bullet template

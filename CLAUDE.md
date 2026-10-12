@@ -24,13 +24,15 @@ Add dependencies with `uv add <pkg>` (dev: `uv add --dev`), never by hand-editin
 ## Architecture rules
 
 - **No network except localhost.** Never add code that reaches the internet at runtime: no telemetry, no CDN assets, no web-search fallback. Model downloads happen only during explicit setup steps.
-- **All model calls go through the protocols** in `src/vaultmind/core/providers.py`. Pipeline code never imports `ollama` or `sentence_transformers` directly.
+- **All model calls go through the protocols** in `src/vaultmind/core/providers.py`, tool calling included. Pipeline code never imports `ollama` or `sentence_transformers` directly.
 - **The engine never imports the UI.** `ui/` calls into `ingest/`, `store/`, `agent/`, and nothing depends on `ui/`. There is no HTTP API layer; the NiceGUI app calls the engine in-process.
 - **Every pipeline behavior that affects quality is a config switch** in `core/config.py` + `config/default.yaml` (the two must stay in sync; a test enforces it), so the eval runner can ablate it.
-- **Grading uses reranker scores, not per-chunk LLM calls.** LLM calls are for analyze, rewrite, generate, and the optional groundedness check.
+- **Grading uses reranker scores, not per-chunk LLM calls.** LLM calls are for planning/analyze, rewrite, tool-loop steps, summarize/extract/compare, document cards at ingest, generate, and the optional checks.
+- **Fast paths before the tool loop.** Lookups keep the corrective-RAG graph, and list/summarize/compare/extract run as fixed recipes. Only open multi-step tasks enter the ReAct tool loop, with bounded steps (Phase 5.5).
+- **Agent tools are plain Python functions** (`agent/tools.py`) over the index, registry and document cards: no MCP, no network. Read-only by default; any write needs human approval; the agent never gets a delete tool. Tool observations go through the injection guard.
 - **Always pass `num_ctx`** to Ollama; its default silently truncates context.
-- Storage: LanceDB holds chunks/vectors/FTS only; SQLite holds files, jobs, chats, traces.
-- Answers cite only graded passages. When nothing passes, say "not found in your documents" rather than generating anyway.
+- Storage: LanceDB holds chunks/vectors/FTS only; SQLite holds files, jobs, chats, traces (and, from Phase 5.5, document cards and agent checkpoints).
+- Lookup answers cite only graded passages. When nothing passes, say "not found in your documents" rather than generating anyway. Whole-document tasks (summaries, comparisons) citing the sections they read is a pending decision (docs/STATUS.md).
 
 ## Parallel agents
 
