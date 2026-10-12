@@ -23,6 +23,7 @@ from vaultmind.eval.metrics import (
     evidence_mrr,
     evidence_recall_at_k,
     injection_resistance,
+    mean_and_spread,
     mrr,
     percentile,
     recall_at_k,
@@ -373,11 +374,16 @@ def _safe_name(name: str) -> str:
     return safe
 
 
-def save_report(report: RunReport, out_dir: Path) -> Path:
+def save_report(report: RunReport, out_dir: Path, *, repeat: int | None = None) -> Path:
     """Write ``<out_dir>/<config_name>__<dataset_name>.jsonl``: one ItemResult per line, then a
-    final ``{"metrics": {...}}`` line. Returns the path."""
+    final ``{"metrics": {...}}`` line. Returns the path.
+
+    With ``repeat`` (1-based, for ``eval run --repeat``), the name ends in ``__r<repeat>``."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{_safe_name(report.config_name)}__{_safe_name(report.dataset_name)}.jsonl"
+    stem = f"{_safe_name(report.config_name)}__{_safe_name(report.dataset_name)}"
+    if repeat is not None:
+        stem += f"__r{repeat}"
+    path = out_dir / f"{stem}.jsonl"
     rows: list[object] = [dataclasses.asdict(r) for r in report.items]
     rows.append({"metrics": report.metrics})
     content = "".join(
@@ -411,13 +417,33 @@ def _ascii(text: str) -> str:
     return text.encode("ascii", errors="replace").decode("ascii")
 
 
+def _format_repeats(name: str, values: Sequence[float | None]) -> str:
+    """One value as is; several as ``mean (min-max)`` over the repeats that have a value."""
+    present = [v for v in values if v is not None]
+    if len(values) <= 1 or not present:
+        return _format_value(name, present[0] if present else None)
+    mean, low, high = mean_and_spread(present)
+    return f"{_format_value(name, mean)} ({_format_value(name, low)}-{_format_value(name, high)})"
+
+
 def format_table(reports: Sequence[RunReport]) -> str:
     """ASCII table: one row per metric, one column per report (``config / dataset``)."""
-    if not reports:
+    return format_repeat_table([[r] for r in reports])
+
+
+def format_repeat_table(runs: Sequence[Sequence[RunReport]]) -> str:
+    """Like `format_table`, with one column per (config, dataset) holding its repeated runs.
+
+    A column with one run shows plain values. With several, each metric shows as
+    ``mean (min-max)``, e.g. ``0.800 (0.767-0.833)``, over the runs where it isn't None (a
+    metric can be None in one repeat, e.g. ``rewrite_recovered`` when nothing was rewritten);
+    ``-`` when it is None in all of them.
+    """
+    if not runs or any(not group for group in runs):
         raise ValueError("no reports to format")
-    header = ["metric"] + [_ascii(f"{r.config_name} / {r.dataset_name}") for r in reports]
+    header = ["metric"] + [_ascii(f"{g[0].config_name} / {g[0].dataset_name}") for g in runs]
     rows = [
-        [name] + [_format_value(name, r.metrics.get(name)) for r in reports]
+        [name] + [_format_repeats(name, [r.metrics.get(name) for r in group]) for group in runs]
         for name in METRIC_NAMES
     ]
     widths = [max(len(row[c]) for row in [header, *rows]) for c in range(len(header))]

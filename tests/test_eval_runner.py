@@ -28,11 +28,13 @@ from vaultmind.eval.runner import (
     RunReport,
     check_compatible,
     compute_metrics,
+    format_repeat_table,
     format_table,
     load_results,
     run_config,
     save_report,
 )
+from vaultmind.eval.tasks import TaskItem, load_tasks
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
 
@@ -507,6 +509,65 @@ def test_format_table_non_ascii_names_and_empty() -> None:
     assert table.isascii()
     with pytest.raises(ValueError):
         format_table([])
+
+
+# --- task set example ---------------------------------------------------------------------
+
+TASKS_EXAMPLE = Path(__file__).resolve().parent.parent / "eval" / "datasets" / "tasks_example.jsonl"
+
+
+def test_tasks_example_loads_and_covers_every_field() -> None:
+    items = load_tasks(TASKS_EXAMPLE)
+    assert len(items) == 8
+    for name in TaskItem.model_fields:
+        assert any(name in item.model_fields_set for item in items), name
+    assert {item.task for item in items} >= {"list", "summarize", "compare", "extract", "open"}
+    assert any(item.clarify for item in items) and any(item.forbidden for item in items)
+    assert any(item.language == "he" for item in items)
+
+
+# --- repeated runs -------------------------------------------------------------------------
+
+
+def test_save_report_repeat_suffix(tmp_path: Path) -> None:
+    assert save_report(_report(), tmp_path).name == "base__tiny.jsonl"  # N = 1: unchanged
+    assert save_report(_report(), tmp_path, repeat=1).name == "base__tiny__r1.jsonl"
+    path = save_report(_report("a/b", "CON"), tmp_path, repeat=2)
+    assert path.name == "a_b___CON__r2.jsonl"
+    assert load_results(path) == _report().items
+
+
+def _with(**values: float | None) -> RunReport:
+    metrics: dict[str, float | None] = dict.fromkeys(METRIC_NAMES)
+    metrics.update(values)
+    return RunReport("base", "cuad", [], metrics)
+
+
+def test_format_repeat_table_mean_min_max() -> None:
+    repeats = [
+        _with(correctness=0.8, total_p50_ms=1000.0, rewrite_recovered=0.5),
+        _with(correctness=0.77, total_p50_ms=1300.0),
+        _with(correctness=0.83, total_p50_ms=1100.0, rewrite_recovered=1.0),
+    ]
+    single = _with(correctness=0.5)
+    table = format_repeat_table([repeats, [single]])
+    lines = table.split("\n")
+    assert table.isascii()
+    assert len({len(line) for line in lines}) == 1
+    assert lines[0].split() == ["metric", "base", "/", "cuad", "base", "/", "cuad"]
+    rows = {line.split()[0]: line.split()[1:] for line in lines[2:]}
+    assert rows["correctness"] == ["0.800", "(0.770-0.830)", "0.500"]
+    assert rows["total_p50_ms"] == ["1133", "(1000-1300)", "-"]
+    # None in one repeat: mean over the repeats that have a value
+    assert rows["rewrite_recovered"] == ["0.750", "(0.500-1.000)", "-"]
+    assert rows["recall@1"] == ["-", "-"]
+
+
+def test_format_repeat_table_matches_format_table_for_one_run() -> None:
+    reports = [_report("base", "cuad"), _with(correctness=0.5)]
+    assert format_repeat_table([[r] for r in reports]) == format_table(reports)
+    with pytest.raises(ValueError):
+        format_repeat_table([[]])
 
 
 # --- agent loop (agent.loop on) ---------------------------------------------------------

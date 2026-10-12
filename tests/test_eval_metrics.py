@@ -1,14 +1,19 @@
 import math
+from collections.abc import Callable
 
 import pytest
 
 from vaultmind.eval.metrics import (
     Source,
     abstention_accuracy,
+    mean_and_spread,
     mrr,
     percentile,
     recall_at_k,
+    router_accuracy,
+    router_confusion,
     source_matches,
+    task_success,
 )
 
 # --- source_matches ---------------------------------------------------------
@@ -214,3 +219,64 @@ def test_percentile_rejects_bad_q(q: float) -> None:
 def test_percentile_rejects_empty() -> None:
     with pytest.raises(ValueError):
         percentile([], 50)
+
+
+# --- task metrics -------------------------------------------------------------
+
+PREDICTED = ["list", "summarize", "lookup", "compare", "summarize", "open"]
+GOLD = ["list", "summarize", "summarize", "compare", "compare", "open"]
+
+
+def test_router_accuracy_hand_computed() -> None:
+    assert router_accuracy(PREDICTED, GOLD) == pytest.approx(4 / 6)
+    assert router_accuracy(["chat"], ["chat"]) == 1.0
+    assert router_accuracy(["chat"], ["lookup"]) == 0.0
+
+
+def test_router_confusion_hand_computed() -> None:
+    confusion = router_confusion(PREDICTED, GOLD)
+    assert confusion == {
+        "compare": {"compare": 1, "summarize": 1},
+        "list": {"list": 1},
+        "open": {"open": 1},
+        "summarize": {"lookup": 1, "summarize": 1},
+    }
+    assert list(confusion) == sorted(confusion)  # deterministic order
+    assert sum(n for row in confusion.values() for n in row.values()) == len(GOLD)
+    diagonal = sum(row.get(gold, 0) for gold, row in confusion.items())
+    assert diagonal / len(GOLD) == router_accuracy(PREDICTED, GOLD)
+
+
+@pytest.mark.parametrize("fn", [router_accuracy, router_confusion])
+def test_router_metrics_reject_bad_input(fn: Callable[[list[str], list[str]], object]) -> None:
+    with pytest.raises(ValueError, match="no items"):
+        fn([], [])
+    with pytest.raises(ValueError, match="length mismatch"):
+        fn(["a"], ["a", "b"])
+
+
+def test_task_success_threshold() -> None:
+    scores = [1.0, 0.75, 2 / 3, 0.8, 0.0]
+    assert task_success(scores) == pytest.approx(3 / 5)  # 1.0, 0.75 and 0.8 pass
+    assert task_success(scores, threshold=1.0) == pytest.approx(1 / 5)
+    assert task_success(scores, threshold=0.0) == 1.0
+    assert task_success([0.5], threshold=0.5) == 1.0  # at the threshold counts
+
+
+@pytest.mark.parametrize("threshold", [-0.1, 1.5, math.nan])
+def test_task_success_rejects_bad_threshold(threshold: float) -> None:
+    with pytest.raises(ValueError, match="threshold"):
+        task_success([1.0], threshold=threshold)
+
+
+def test_task_success_rejects_empty() -> None:
+    with pytest.raises(ValueError):
+        task_success([])
+
+
+def test_mean_and_spread() -> None:
+    assert mean_and_spread([0.8, 0.77, 0.83]) == pytest.approx((0.8, 0.77, 0.83))
+    assert mean_and_spread([5.0]) == (5.0, 5.0, 5.0)
+    assert mean_and_spread((1.0, 3.0)) == (2.0, 1.0, 3.0)
+    with pytest.raises(ValueError):
+        mean_and_spread([])

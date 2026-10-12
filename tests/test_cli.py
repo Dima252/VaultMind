@@ -350,3 +350,56 @@ def test_eval_run_progress_shows_rewrites(
     expected = "  [1/1] answered rewrites=2" if loop else "  [1/1] answered"
     assert expected in out.output.splitlines()
     assert "rewrite_rate" in out.output
+
+
+def _eval_run(config: Path, dataset: Path, out_dir: Path, *extra: str) -> Any:
+    return _invoke(
+        "eval", "run", "-c", str(config), "-d", str(dataset), "--no-judge",
+        "--out-dir", str(out_dir), *extra,
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("repeat", [1, 2])
+def test_eval_run_repeat_files_and_table(
+    config_path: Path, tmp_path: Path, llm: FakeLLM, monkeypatch: pytest.MonkeyPatch, repeat: int
+) -> None:
+    dataset = tmp_path / "tiny.jsonl"
+    item = {"question": "Setup: install with uv.", "answer": "uv", "source_file": "manual.md"}
+    dataset.write_text(json.dumps({**item, "source_page": 2}) + "\n", encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_agent(question: str, *args: Any, **kwargs: Any) -> AgentResult:
+        calls.append(question)
+        # one rewrite on the first repeat, none on the second: rewrite_rate 1.0 then 0.0
+        return _answer(question=question, rewrites=1 if len(calls) == 1 else 0, sources=[])
+
+    monkeypatch.setattr(runner, "run_agent", fake_agent)
+    out_dir = tmp_path / "results"
+    extra = ["--repeat", str(repeat)] if repeat > 1 else []
+    out = _eval_run(config_path, dataset, out_dir, *extra)
+    assert out.exit_code == 0, out.output
+    assert len(calls) == repeat
+
+    [run_dir] = list(out_dir.iterdir())
+    names = sorted(p.name for p in run_dir.iterdir())
+    stem = f"config-loop__{runner._safe_name(str(dataset))}"  # a path names the dataset
+    if repeat == 1:
+        assert names == [f"{stem}.jsonl"]
+        assert "(repeat" not in out.output and "repeats." not in out.output
+        rate = next(line for line in out.output.splitlines() if line.startswith("rewrite_rate"))
+        assert rate.split()[1:] == ["1.000"]
+    else:
+        assert names == [f"{stem}__r1.jsonl", f"{stem}__r2.jsonl"]
+        assert f"config-loop / {dataset}: 1 items (repeat 2/2)" in out.output.splitlines()
+        rate = next(line for line in out.output.splitlines() if line.startswith("rewrite_rate"))
+        assert rate.split()[1:] == ["0.500", "(0.000-1.000)"]
+        assert "mean (min-max) over 2 repeats" in out.output
+
+
+def test_eval_run_rejects_repeat_zero(config_path: Path, tmp_path: Path, llm: FakeLLM) -> None:
+    dataset = tmp_path / "tiny.jsonl"
+    dataset.write_text(
+        '{"question": "q", "answer": "a", "source_file": "m.md", "source_page": 1}\n', "utf-8"
+    )
+    out = _eval_run(config_path, dataset, tmp_path / "results", "--repeat", "0")
+    assert out.exit_code != 0

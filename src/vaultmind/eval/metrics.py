@@ -241,3 +241,66 @@ def correctness_score(verdicts: Sequence[str]) -> float:
     if unknown:
         raise ValueError(f"unknown verdicts: {unknown}")
     return sum(CORRECTNESS_WEIGHTS[v] for v in verdicts) / len(verdicts)
+
+
+# --- task metrics (Phase 5.5) -------------------------------------------------------------
+
+TASK_SUCCESS_THRESHOLD = 0.75
+
+
+def _check_labels(predicted: Sequence[str], gold: Sequence[str]) -> None:
+    if not gold:
+        raise ValueError("no items to score")
+    if len(predicted) != len(gold):
+        raise ValueError(f"length mismatch: {len(predicted)} predicted, {len(gold)} gold")
+
+
+def router_accuracy(predicted: Sequence[str], gold: Sequence[str]) -> float:
+    """Fraction of items whose predicted task (route) equals the gold one.
+
+    ``accuracy = (1/N) * sum_i [predicted_i == gold_i]``, compared exactly. Raises ValueError
+    on empty input or length mismatch.
+    """
+    _check_labels(predicted, gold)
+    return sum(p == g for p, g in zip(predicted, gold, strict=True)) / len(gold)
+
+
+def router_confusion(predicted: Sequence[str], gold: Sequence[str]) -> dict[str, dict[str, int]]:
+    """Confusion counts: ``confusion[gold][predicted]`` = number of items with that pair.
+
+    Only pairs that occur are present; outer and inner keys are sorted, so the result is
+    deterministic. The diagonal (``confusion[t][t]``) counts correct routes. Raises ValueError
+    on empty input or length mismatch.
+    """
+    _check_labels(predicted, gold)
+    counts: dict[str, dict[str, int]] = {}
+    for p, g in zip(predicted, gold, strict=True):
+        row = counts.setdefault(g, {})
+        row[p] = row.get(p, 0) + 1
+    return {g: dict(sorted(counts[g].items())) for g in sorted(counts)}
+
+
+def task_success(scores: Sequence[float], threshold: float = TASK_SUCCESS_THRESHOLD) -> float:
+    """Share of items whose key-facts score is at least ``threshold``.
+
+    ``success = (1/N) * sum_i [score_i >= threshold]``, where ``score_i`` is the fraction of
+    item i's key facts the answer states. With the default 0.75, an item with 4 or 5 facts
+    needs all but one, one with 2 or 3 facts needs all of them. Raises ValueError on empty
+    input or a threshold outside [0, 1] (including NaN).
+    """
+    if not scores:
+        raise ValueError("no items to score")
+    if not 0.0 <= threshold <= 1.0:  # also rejects NaN
+        raise ValueError(f"threshold must be in [0, 1], got {threshold}")
+    return sum(s >= threshold for s in scores) / len(scores)
+
+
+def mean_and_spread(values_per_repeat: Sequence[float]) -> tuple[float, float, float]:
+    """``(mean, min, max)`` of one metric over repeated runs.
+
+    ``mean = (1/R) * sum_r v_r`` over the R repeats. Raises ValueError on empty input.
+    """
+    if not values_per_repeat:
+        raise ValueError("no values")
+    values = list(values_per_repeat)
+    return sum(values) / len(values), min(values), max(values)
