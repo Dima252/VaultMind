@@ -1,11 +1,14 @@
 """The desktop window: NiceGUI pages calling the engine in-process (there is no HTTP API).
 
 Served on 127.0.0.1 only. NiceGUI binds 0.0.0.0 by default outside native mode, so the host
-is always passed explicitly.
+is always passed explicitly. The native window's browser engine (WebView2 on Windows) phones
+Microsoft by itself (measured: HTTPS to Microsoft servers with nothing open but our page), so
+its background services are switched off and anything left goes to a dead local proxy.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,11 +20,28 @@ from vaultmind.ui.state import init_state, state
 
 HOST = "127.0.0.1"
 WINDOW_SIZE = (1280, 860)
+# WebView2 reads this variable in the window's process; it overrides pywebview's own arguments.
+# The proxy is a closed local port: requests to 127.0.0.1 bypass proxies, all others fail.
+WEBVIEW2_ARGS = " ".join(
+    [
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-domain-reliability",
+        "--disable-sync",
+        "--no-pings",
+        "--disable-breakpad",
+        "--disable-features=ElasticOverscroll,msSmartScreenProtection,OptimizationHints,"
+        "AutofillServerCommunication,MediaRouter",
+        "--proxy-server=http://127.0.0.1:9",
+    ]
+)
 
 
 def main(cfg: Config, config_source: Path | None = None) -> None:
     """Run the app until its window is closed."""
     init_state(cfg, config_source)
+    if cfg.ui.native:
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = WEBVIEW2_ARGS
     app.native.settings["ALLOW_DOWNLOADS"] = True  # exports use ui.download in the native window
     app.on_startup(_load_engine)
     app.on_shutdown(lambda: state().close())
