@@ -11,6 +11,8 @@ git rev-parse --verify --quiet HEAD | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'No commits yet. Commit the scaffold first so every agent starts from the same base.' }
 if (git status --porcelain) { throw 'Working tree has uncommitted changes. Commit them first; agents only see committed code.' }
 
+if (-not $Agents) { throw 'No agents listed. Set $Agents in scripts/agents/_common.ps1 first.' }
+
 New-Item -ItemType Directory -Force $WorktreeRoot, $LogDir | Out-Null
 
 foreach ($name in $Agents) {

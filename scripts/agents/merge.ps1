@@ -45,4 +45,4 @@ if ($Cleanup) {
     Write-Host '[clean] worktrees removed, branches deleted'
 }
 
-Write-Host "`nNext: integrate on main with:  claude 'Read scripts/agents/prompts/integrate.md and complete the task it describes.'"
+Write-Host "`nNext: review the merged branches' contract change requests and integrate on main."

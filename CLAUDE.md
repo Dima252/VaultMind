@@ -37,7 +37,7 @@ Add dependencies with `uv add <pkg>` (dev: `uv add --dev`), never by hand-editin
 
 ## Parallel agents
 
-Larger phases are split across agents working in separate git worktrees (`scripts/agents/`: `setup.ps1` → `start.ps1` → `merge.ps1`). Task prompts live in `scripts/agents/prompts/`. Shared contracts (`core/models.py`, `core/providers.py`, `core/config.py`, stub signatures) are fixed **before** agents start. Agents never edit shared files; they write contract change requests in their commit message instead.
+Larger phases are split across agents working in separate git worktrees (`scripts/agents/`: `setup.ps1` → `start.ps1` → `merge.ps1`). Task prompts live in `scripts/agents/prompts/` (finished ones in `prompts/done/`); set the agent list in `_common.ps1`. Shared contracts (`core/models.py`, `core/providers.py`, `core/config.py`, stub signatures) are fixed **before** agents start. Agents never edit shared files; they write contract change requests in their commit message instead.
 
 ## Conventions
 

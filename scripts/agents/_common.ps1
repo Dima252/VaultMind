@@ -7,7 +7,8 @@ $WorktreeRoot = Join-Path (Split-Path $RepoRoot -Parent) 'VaultMind-agents'
 $LogDir       = Join-Path $WorktreeRoot 'logs'
 
 # One entry per agent; each has a prompt at scripts/agents/prompts/<name>.md and a branch agent/<name>.
-$Agents = @('cards', 'tools', 'taskeval')  # Phase 5.5 M1; Phase 2 was: runner, judge, adversarial
+# Set this before setup.ps1. Finished prompts move to prompts/done/ (Phase 5.5 M1 was: cards, tools, taskeval).
+$Agents = @()
 
 function Get-AgentPrompt([string]$Name) {
     "Read scripts/agents/prompts/$Name.md and complete the task it describes."

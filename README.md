@@ -3,7 +3,7 @@
 **A fully local, privacy-first AI assistant for your own documents.**
 Drop in PDFs, Markdown or text files and ask questions about them. VaultMind finds the relevant passages, checks that they actually answer the question, retries with a better search when they don't, and answers with citations, all on your own machine. Nothing is sent to a cloud API.
 
-> 🚧 **Status: in development.** Working today: ingestion (including Hebrew PDFs), hybrid retrieval with reranking, the corrective loop with an injection guard and a contradiction check, traces, the evaluation harness, and the app (`vaultmind ui`). It answers lookup questions well, but can't yet summarize, list, compare or plan multi-step work. Turning it into a full document agent is the next phase ([roadmap](#roadmap-from-search-to-document-agent)). See [status](docs/STATUS.md), [results](docs/RESULTS.md) and the [execution plan](docs/EXECUTION_PLAN.md).
+> 🚧 **Status: in development.** Working today: ingestion (including Hebrew PDFs), hybrid retrieval with reranking, the corrective loop with an injection guard and a contradiction check, traces, the evaluation harness, and the app (`vaultmind ui`). It answers lookup questions well, but can't yet summarize, list, compare or plan multi-step work. Turning it into a full document agent is in progress ([roadmap](#roadmap-from-search-to-document-agent)): document cards, the document catalog, local tools and the task evaluation are built; the planner that routes requests to them comes next. See [status](docs/STATUS.md), [results](docs/RESULTS.md) and the [execution plan](docs/EXECUTION_PLAN.md).
 
 <!-- TODO(Phase 7): demo GIF here, showing the agent planning a task, reading documents step by step, and answering with citations -->
 
@@ -124,10 +124,11 @@ uv run vaultmind ingest                      # index new/changed files, forget d
 uv run vaultmind ask "What does the contract say about termination?"
 ```
 
-Or use the app, which watches `vault/` and indexes changes as they happen:
+Or use the app, which watches `vault/`, indexes changes as they happen and writes a document card for each file in the background:
 
 ```bash
 uv run vaultmind ui          # opens in your browser on 127.0.0.1 (use --native for its own window)
+uv run vaultmind enrich      # optional: write the missing document cards from the command line
 ```
 
 ## Configuration
@@ -171,14 +172,17 @@ uv run mypy src tests
 
 ```
 src/vaultmind/
-  core/     config, model provider interfaces
-  ingest/   folder watcher, parsers, chunker, pipeline
-  store/    LanceDB index, SQLite registry
-  agent/    LangGraph nodes and graph
-  eval/     datasets, metrics, runner
+  core/     config, shared types, model provider interfaces (Ollama, reranker)
+  ingest/   parsers, chunker, pipeline, queue + folder watcher, document cards
+  store/    LanceDB index; SQLite registry, chats, traces, document cards
+  agent/    LangGraph graph and nodes, retrieval, injection guard, checks,
+            document catalog, tools, tool gateway
+  app/      engine the UI runs on, export, citation highlighting, privacy check
+  eval/     datasets, task set, metrics, judges, runner, CUAD importer
   ui/       NiceGUI interface
 config/     YAML configuration
-eval/       evaluation datasets and results
+eval/       evaluation configs, datasets and fixtures (results stay local)
+scripts/    parallel-agent workflow (worktrees, task prompts)
 tests/      unit tests and fake providers
 ```
 
