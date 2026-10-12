@@ -124,7 +124,7 @@ async def test_answer_streams_with_citation_chip_and_titles_the_chat(make_app: A
         await user.open("/")
         await _ask(user, QUESTION)
         await user.should_see("within sixty days", retries=WAIT)
-        await user.should_see(marker="citation", content="[1] fees.md", retries=WAIT)
+        await user.should_see(marker="citation", content="[1] ⁦fees.md", retries=WAIT)
         (chat,) = engine.chats.recent()
         assert chat.title == QUESTION
         with user.scope(marker=f"chat-{chat.id}"):
@@ -241,7 +241,7 @@ async def test_stored_answer_shows_notes_and_closest_matches(make_app: Any, cfg:
         await user.should_see("Not found in your documents")
         await user.should_see("Closest matches")
         await user.should_see("Sources disagree")
-        await user.should_see(marker="citation", content="[2] fees.md")
+        await user.should_see(marker="citation", content="[2] ⁦fees.md")
 
 
 @pytest.mark.anyio

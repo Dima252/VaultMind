@@ -21,6 +21,14 @@ from vaultmind.ui.state import init_state, state
 
 HOST = "127.0.0.1"
 WINDOW_SIZE = (1280, 860)
+# A scroll area's content may grow wider than the area itself, so a long chip (a file name)
+# pushed the chat past the window. Pin the message list to the visible width; chips then
+# shorten their label with an ellipsis.
+CSS = """
+.vm-messages .q-scrollarea__content { width: 100%; }
+.q-chip { max-width: 100%; }
+.q-chip__content { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+"""
 # WebView2 reads this variable in the window's process; it overrides pywebview's own arguments.
 # The proxy is a closed local port: requests to 127.0.0.1 bypass proxies, all others fail.
 WEBVIEW2_ARGS = " ".join(
@@ -68,6 +76,7 @@ async def _load_engine() -> None:
 
 def root() -> None:
     """Every page: the header, then the routed content."""
+    ui.add_css(CSS)
     with ui.header().classes("items-center gap-4 px-4 py-2"):
         ui.label("VaultMind").classes("text-lg font-semibold")
         ui.link("Chat", "/").classes("text-white")
@@ -82,7 +91,7 @@ def root() -> None:
             "/library": _when_ready(library.page),
             "/settings": settings_page.page,  # usable even when the engine failed to load
         }
-    )
+    ).classes("w-full")  # NiceGUI containers shrink-wrap their children (align-items: start)
 
 
 def _when_ready(build: Callable[[], None]) -> Callable[[], None]:

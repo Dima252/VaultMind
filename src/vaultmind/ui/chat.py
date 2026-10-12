@@ -68,7 +68,7 @@ class _ChatPage:
             .classes("w-full no-wrap gap-0 items-stretch")
             .style("height: calc(100vh - 6rem)")
         ):
-            with ui.column().classes("w-64 shrink-0 h-full gap-2 pr-3 border-r"):
+            with ui.column().classes("w-44 sm:w-56 lg:w-64 shrink-0 h-full gap-2 pr-3 border-r"):
                 ui.button("New chat", icon="add", on_click=self.new_chat).props(
                     "outline no-caps"
                 ).classes("w-full").mark("new-chat")
@@ -89,7 +89,7 @@ class _ChatPage:
                                 "export-chat-pdf"
                             )
                     self.export_button = export
-                self.scroll = ui.scroll_area().classes("flex-grow w-full")
+                self.scroll = ui.scroll_area().classes("flex-grow w-full vm-messages")  # app.CSS
                 with self.scroll:
                     self.messages = ui.column().classes("w-full gap-4 pr-3").mark("messages")
                 with ui.row().classes("w-full items-end no-wrap gap-2"):
@@ -366,16 +366,25 @@ def _empty_hint() -> ui.label:
 
 def _question_bubble(text: str) -> ui.row:
     with ui.row().classes("w-full justify-end") as row:
+        # Tailwind has no "primary" color here, so the bubble's tint is inline.
         ui.label(text).classes(
-            "whitespace-pre-wrap break-words rounded-lg px-3 py-2 bg-primary/10 max-w-[80%]"
-        ).props('dir="auto"')
+            "whitespace-pre-wrap break-words rounded-lg px-3 py-2 max-w-[80%]"
+        ).style("background: rgba(88, 152, 212, 0.22)").props('dir="auto"')
     return row
+
+
+CHIP_NAME_CHARS = 48  # longer file names are shortened in the middle; the tooltip has it all
 
 
 def _chip_text(source: Source) -> str:
     name = source.file_path.name if source.file_path else "unknown file"
+    if len(name) > CHIP_NAME_CHARS:
+        half = (CHIP_NAME_CHARS - 1) // 2
+        name = f"{name[:half]}…{name[-half:]}"
     page = f", p. {source.page}" if source.page is not None else ""
-    return f"[{source.n}] {name}{page}"
+    # Isolated left-to-right (LRI ... PDI): a Hebrew name keeps ".pdf" at its end and can't
+    # reorder "[n]" and "p. N"; Hebrew words inside it still read right-to-left.
+    return f"[{source.n}] ⁦{name}⁩{page}"
 
 
 def _citation_chips(answer: ChatMessage) -> None:
@@ -395,7 +404,8 @@ def _citation_chips(answer: ChatMessage) -> None:
                 icon="warning" if warned else "description",
                 color="warning" if warned else ("grey-5" if answer.abstained else "primary"),
                 on_click=lambda s=source: open_citation(s),
-            ).props("outline dense")
+            ).props('outline dense dir="ltr"')
+            chip.classes("max-w-full")
             chip.mark("citation")
             with chip:
                 ui.tooltip("\n".join([source.label, *source.warnings])).classes(

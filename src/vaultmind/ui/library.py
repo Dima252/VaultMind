@@ -146,9 +146,11 @@ class _Library:
                 self.text_filter = ui.input(
                     "Filter", placeholder="name, folder or error", on_change=self._render
                 ).props("clearable dense")
-                self.status_filter = ui.select(
-                    _STATUS_FILTER, value="all", label="Status", on_change=self._render
-                ).props("dense")
+                self.status_filter = (
+                    ui.select(_STATUS_FILTER, value="all", label="Status", on_change=self._render)
+                    .props("dense")
+                    .classes("w-36")
+                )
             self.table = ui.table(columns=_COLUMNS, rows=[], row_key="key", pagination=50).classes(
                 "w-full"
             )
