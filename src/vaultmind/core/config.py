@@ -68,7 +68,7 @@ class IngestConfig(_Section):
 
 
 class UIConfig(_Section):
-    native: bool = True  # own window (pywebview); false: open the default browser instead
+    native: bool = False  # true: own window (WebView2 on Windows phones Microsoft by itself)
     port: int = Field(default=8730, gt=0, lt=65536)  # served on 127.0.0.1 only
     privacy_check_s: float = Field(default=5.0, gt=0)  # privacy badge refresh interval
 

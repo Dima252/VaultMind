@@ -13,12 +13,12 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 | 2. Evaluation harness | ✅ Done. Baseline in [RESULTS.md](RESULTS.md), reproducible. `eval generate` deferred |
 | 3. Retrieval quality | ✅ Done. Hybrid + rerank + child chunks are the new default; ablations in [RESULTS.md](RESULTS.md) |
 | 4. Agent loop + safety | ✅ Done. LangGraph loop, injection guard, contradiction and groundedness checks, traces. Measured in [RESULTS.md](RESULTS.md); only the parts that earned their keep are on by default |
-| 5. Desktop app | ✅ Built (NiceGUI, `vaultmind ui`). One open decision: the native window's WebView2 phones Microsoft (see below) |
+| 5. Desktop app | ✅ Built (NiceGUI, `vaultmind ui`). Opens as a browser tab by default (decided 2026-10-12, see below). Hand walkthrough pending |
 | 6–7 | ⬜ Not started |
 
-**Phase 5 state:** `uv run vaultmind ui` (native window) or `vaultmind ui --browser`. Built in two waves of parallel agents (plan in EXECUTION_PLAN.md, "Parallel build"). Verified with the real models on the real vault: the engine loads in ~15 s plus ~10 s Ollama warm-up (a loading screen covers it), first token ~2.9 s, follow-ups ~1.6 s; the startup scan of an unchanged vault takes ~2.6 s; 12 questions asked while 9 files re-indexed in a loop all answered correctly with no errors. Served on 127.0.0.1 only (not reachable from the LAN), no external assets.
+**Phase 5 state:** `uv run vaultmind ui` (a tab in your default browser) or `vaultmind ui --native` (own window). Built in two waves of parallel agents (plan in EXECUTION_PLAN.md, "Parallel build"). Verified with the real models on the real vault: the engine loads in ~15 s plus ~10 s Ollama warm-up (a loading screen covers it), first token ~2.9 s, follow-ups ~1.6 s; the startup scan of an unchanged vault takes ~2.6 s; 12 questions asked while 9 files re-indexed in a loop all answered correctly with no errors. Served on 127.0.0.1 only (not reachable from the LAN), no external assets.
 
-**Open decision (privacy):** in native mode the window's WebView2 (Microsoft Edge runtime) opens HTTPS connections to Microsoft servers by itself, with only our 127.0.0.1 page loaded. VaultMind's own Python process makes none. The privacy badge shows it red, correctly. `ui/app.py` switches off WebView2's background services and routes the rest to a dead local proxy: that removed the network-service connections, but the main browser process still connects (it uses Windows' own networking). Options: make `ui.native: false` (browser mode) the default, keep native and document it, or block it outside the app (Edge policy or a firewall rule).
+**Decided (2026-10-12): browser mode is the default** (`ui.native: false`). In native mode the window's WebView2 (Microsoft Edge runtime) opens HTTPS connections to Microsoft servers by itself; switching off its background services and a dead local proxy removed the network-service traffic, but its main process still connects through Windows' own networking. In browser mode VaultMind's process tree is one Python process with no outside connections (verified; the badge is green). The trade-off: the user's browser can see the page, so **use a separate browser profile with no extensions** for VaultMind, and don't use "Translate this page", AI sidebars or enhanced spell check on its tab (they send page text or typed text out). `--native` stays available.
 
 **Next:** the user walks through the app by hand (drop files in, watch them index, ask, open a citation, inspect the trace, export); then Phase 6.
 
@@ -150,13 +150,13 @@ Verified on the dev machine (Windows 11, RTX 5070 Ti 16 GB, Ollama with `qwen3:1
 | `app/export.py`, `app/highlight.py`, `app/privacy.py`, `app/settings.py` | Markdown/PDF export (Hebrew RTL, system font with Hebrew glyphs); PDF page render with the passage highlighted in memory (and a highlighted copy for the system viewer); connection check of the app's process tree; `local.yaml` overrides + restart/reindex classification | Highlighting found 147/151 real chunks (117/121 Hebrew) |
 | `ui/` | NiceGUI: `app.py` (shell, startup, WebView2 lockdown), `state.py` (`AppState`, `off_loop`), `chat.py`, `trace_view.py`, `citation_view.py`, `library.py`, `settings_page.py`, `badge.py` | Only `ui/` imports NiceGUI and nothing imports `ui/` (`tests/test_layering.py`) |
 | `agent/trace_text.py` | One-line trace summaries shared by the CLI and the app | |
-| `cli.py` | `config`, `doctor`, `pull-reranker`, `ingest`, `ui [--browser]`, `ask [--trace]`, `trace`, `eval import-cuad`, `eval install-adversarial`, `eval run`, `eval sweep` | Forces `errors="replace"` on stdout (Windows cp1255 console) |
+| `cli.py` | `config`, `doctor`, `pull-reranker`, `ingest`, `ui [--native/--browser]`, `ask [--trace]`, `trace`, `eval import-cuad`, `eval install-adversarial`, `eval run`, `eval sweep` | Forces `errors="replace"` on stdout (Windows cp1255 console) |
 
 Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `vaultmind.sqlite`. Both are gitignored.
 
 ## Decisions already made (don't re-litigate without measurements)
 
-- **No API layer.** The UI (NiceGUI, `native=True`) will call the engine in-process. The engine never imports `ui/`.
+- **No API layer.** The UI (NiceGUI) calls the engine in-process. **Browser tab by default, not the native window** (2026-10-12: WebView2 contacts Microsoft by itself). The engine never imports `ui/`.
 - **LanceDB** over Chroma (built-in full-text search for hybrid retrieval, no telemetry). **SQLite** for app state.
 - **Reranker scores grade chunks**, not per-chunk LLM calls (Phase 3/4).
 - **The LLM reads the graded child chunks, not their parent sections** (`small_to_big: false`, decided 2026-10-12 from 3 runs each: about +8 points correctness, faster). Re-measure on long-form documents once the mixed-type supplement exists.

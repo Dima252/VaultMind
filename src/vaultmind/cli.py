@@ -185,17 +185,21 @@ def ingest(
 
 @app.command()
 def ui(
-    browser: Annotated[
-        bool, typer.Option("--browser", help="Open in the default browser, not a native window.")
-    ] = False,
+    native: Annotated[
+        bool | None,
+        typer.Option(
+            "--native/--browser",
+            help="Own window, or a tab in the default browser. Default: ui.native (browser).",
+        ),
+    ] = None,
     config_path: ConfigOption = None,
 ) -> None:
     """Open the desktop app (served on 127.0.0.1 only)."""
     from vaultmind.ui.app import main
 
     cfg = load_config(config_path)
-    if browser:
-        cfg = cfg.model_copy(update={"ui": cfg.ui.model_copy(update={"native": False})})
+    if native is not None:
+        cfg = cfg.model_copy(update={"ui": cfg.ui.model_copy(update={"native": native})})
     main(cfg, resolve_config_path(config_path))
 
 

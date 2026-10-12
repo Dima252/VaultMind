@@ -475,10 +475,10 @@ async def test_explicit_config_file_is_flagged(
 
 
 @pytest.mark.anyio
-async def test_browser_flag_is_not_saved(app_state: ui_state.AppState) -> None:
-    # `vaultmind ui --browser` turns native off for the run; the config file still says on.
+async def test_window_flag_is_not_saved(app_state: ui_state.AppState) -> None:
+    # `vaultmind ui --native` turns the window on for the run; the config file still says off.
     app_state.cfg = app_state.cfg.model_copy(
-        update={"ui": app_state.cfg.ui.model_copy(update={"native": False})}
+        update={"ui": app_state.cfg.ui.model_copy(update={"native": True})}
     )
     async with user_simulation(root=root) as user:
         await user.open("/settings")

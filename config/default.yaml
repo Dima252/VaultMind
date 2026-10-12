@@ -44,6 +44,7 @@ ingest:
   debounce_s: 2.0           # wait for a file to stop changing before indexing it
 
 ui:
-  native: true              # own window (pywebview); false: open the default browser instead
+  native: false             # false: a tab in your browser; true: own window (on Windows its
+                            # WebView2 engine contacts Microsoft by itself, see docs/STATUS.md)
   port: 8730                # the UI is served on 127.0.0.1 only, never on the network
   privacy_check_s: 5        # how often the privacy badge checks the app's connections

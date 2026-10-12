@@ -50,7 +50,7 @@ def test_save_then_load_round_trips(tmp_path: Path) -> None:
         ollama={"keep_alive": "5m"},
         models={"llm": "qwen3:4b", "think": True},
         retrieval={"rerank_threshold": 0.25},
-        ui={"port": 9000, "native": False},
+        ui={"port": 9000, "native": True},
     )
     path = tmp_path / "config" / "nested" / "local.yaml"  # parent folders are created
 

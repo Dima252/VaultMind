@@ -68,7 +68,7 @@ The loop is a [LangGraph](https://github.com/langchain-ai/langgraph) state machi
 | App state | SQLite | File registry, ingestion jobs, chat history, traces |
 | Orchestration | LangGraph | Cyclic agent state, per-step event streaming |
 | Parsing | pymupdf4llm | PDF to Markdown with heading structure and page numbers |
-| UI | [NiceGUI](https://nicegui.io) (native window) | Event-driven Python UI in a real desktop window, with no separate API layer |
+| UI | [NiceGUI](https://nicegui.io) (browser tab on 127.0.0.1; optional native window) | Event-driven Python UI, with no separate API layer. Browser mode by default: the native window's WebView2 contacts Microsoft by itself |
 
 Models are configurable. Every model call goes through a small provider interface, so backends can be swapped and compared.
 

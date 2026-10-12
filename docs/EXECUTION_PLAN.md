@@ -129,7 +129,7 @@ Dependencies: `uv add "nicegui[native]" watchdog psutil`
 
 **Done when:** a new user can drop files in, watch them index, ask a question, and inspect the trace without touching the CLI.
 
-> Status (2026-10-12): built and merged; the app runs on the real vault with the real models. Open: the native window's WebView2 contacts Microsoft by itself (the badge shows it), see STATUS.md. Not yet walked through by hand in the window.
+> Status (2026-10-12): built and merged; the app runs on the real vault with the real models. Opens as a browser tab by default (the native window's WebView2 contacts Microsoft by itself, see STATUS.md). Other websites are refused (Host/Origin check against DNS rebinding). Not yet walked through by hand.
 
 ### Parallel build (two waves)
 
@@ -167,6 +167,9 @@ Dependencies: `uv add --dev pytest-socket`
 - [ ] Resilience: if Ollama goes down mid-session, show a clear message and recover. Interrupted ingestion jobs resume after a restart.
 - [ ] **Secret / PII scanner at ingest** (config: `ingest.secret_scan: off | flag | mask | exclude`): local regex patterns for API keys and tokens, private keys, passwords in config-like lines, card numbers (Luhn-checked), emails, phone and ID numbers. Matches are recorded per file in the registry and shown in the Library with a lock icon. The same pass flags prompt-injection patterns for Phase 4. No model, no network.
 - [ ] Integration test pass on the full corpus.
+- [ ] **Launch token:** a secret generated at each `vaultmind ui` start, required by the server (cookie set from the opening URL), so other programs on the machine can't use the app. The Host/Origin check (Phase 5) already stops other websites.
+- [ ] **Index consistency:** re-indexing a file swaps its chunks atomically (today a question asked between the delete and the add can miss the file).
+- [ ] Docs: run VaultMind in a separate browser profile without extensions; which browser features send page text out.
 
 **Done when:** the network-blocked test passes in CI and none of the edge cases crashes the app.
 
