@@ -5,7 +5,7 @@ from datetime import UTC
 from types import SimpleNamespace
 from typing import Any
 
-import psutil  # type: ignore[import-untyped]
+import psutil
 import pytest
 
 from vaultmind.app.privacy import PrivacyStatus, check, is_loopback

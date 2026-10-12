@@ -15,7 +15,7 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 | 4. Agent loop + safety | ✅ Done. LangGraph loop, injection guard, contradiction and groundedness checks, traces. Measured in [RESULTS.md](RESULTS.md); only the parts that earned their keep are on by default |
 | 5–7 | ⬜ Not started |
 
-**In progress:** Phase 5, the desktop app (NiceGUI), built in two waves of parallel agents (plan in EXECUTION_PLAN.md, Phase 5 "Parallel build"). Contracts are on `main`; wave 1 (queue, chats, citations) is running. The engine is ready for it: `agent.graph.stream_agent` streams tokens and returns an `AgentResult` with sources, warnings and the trace. Keep the reranker and models loaded for the app's lifetime (loading the reranker takes ~7 s).
+**In progress:** Phase 5, the desktop app (NiceGUI), built in two waves of parallel agents (plan in EXECUTION_PLAN.md, Phase 5 "Parallel build"). Contracts, the UI shell and wave 1 (ingest queue + watcher, chat store + export, highlighted citations + privacy check + settings) are merged; wave 2 (chat UI, library/settings UI) is running. `Engine` verified live: ~15 s load + ~10 s Ollama warm-up at startup, first token ~2.9 s, follow-up ~1.6 s. The engine is ready for it: `agent.graph.stream_agent` streams tokens and returns an `AgentResult` with sources, warnings and the trace. Keep the reranker and models loaded for the app's lifetime (loading the reranker takes ~7 s).
 
 The 27 personal reference answers were verified against the source pages (2026-10-12); none needed changing, so the personal-set numbers in RESULTS.md stand.
 

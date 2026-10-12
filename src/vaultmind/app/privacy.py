@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-import psutil  # type: ignore[import-untyped]
+import psutil
 
 _GONE = (psutil.NoSuchProcess, psutil.AccessDenied)  # ZombieProcess is a NoSuchProcess
 
