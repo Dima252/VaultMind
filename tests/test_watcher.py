@@ -121,6 +121,24 @@ def test_unchanged_file_events_do_not_resubmit(
     assert fake.names("submit") == ["a.md"]
 
 
+def test_existing_files_read_after_start_are_not_resubmitted(root: Path, fake: FakeQueue) -> None:
+    path = root / "old.md"
+    path.write_text("already indexed by the startup scan", encoding="utf-8")
+    w = VaultWatcher(root, cast(IngestQueue, fake), debounce_s=DEBOUNCE)
+    w.start()
+    try:
+        time.sleep(0.1)
+        path.read_text(encoding="utf-8")  # the scan hashing it: a "modified" event on Windows
+        path.chmod(0o444)
+        path.chmod(0o666)
+        settle()
+        assert fake.names("submit") == []
+        path.write_text("edited", encoding="utf-8")
+        assert eventually(lambda: fake.names("submit") == ["old.md"])
+    finally:
+        w.stop()
+
+
 def test_delete_forgets(watcher: VaultWatcher, root: Path, fake: FakeQueue) -> None:
     path = root / "a.md"
     path.write_text("hello", encoding="utf-8")

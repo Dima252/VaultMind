@@ -70,6 +70,7 @@ class VaultWatcher:
             if self._observer is not None or self._stopped:
                 return
             self._root.mkdir(parents=True, exist_ok=True)
+            self._remember_existing()
             observer = Observer()
             observer.daemon = True
             observer.schedule(_Handler(self), str(self._root), recursive=True)
@@ -87,6 +88,20 @@ class VaultWatcher:
         if observer is not None:
             observer.stop()
             observer.join()
+
+    def _remember_existing(self) -> None:
+        """Record the files already here (the startup scan handles them). NTFS updates access
+        times about once an hour, so the scan's own reads would otherwise come back as
+        "modified" events and resubmit every file."""
+        for path in self._root.rglob("*"):
+            if not self._wanted(path):
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            if path.is_file():
+                self._submitted[_key(path)] = (st.st_mtime_ns, st.st_size)
 
     # -- events (on the observer thread) --
 
