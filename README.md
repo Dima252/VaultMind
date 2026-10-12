@@ -3,7 +3,7 @@
 **A fully local, privacy-first AI assistant for your own documents.**
 Drop in PDFs, Markdown or text files and ask questions about them. VaultMind finds the relevant passages, checks that they actually answer the question, retries with a better search when they don't, and answers with citations, all on your own machine. Nothing is sent to a cloud API.
 
-> 🚧 **Status: in development.** Ingestion, hybrid retrieval with reranking, cited question answering, and the evaluation harness work from the command line; the corrective agent loop is next. See [status](docs/STATUS.md) and the [execution plan](docs/EXECUTION_PLAN.md). Evaluation results will be published here as each phase lands.
+> 🚧 **Status: in development.** The engine works from the command line: ingestion (including Hebrew PDFs), hybrid retrieval with reranking, the agent loop with an injection guard and a contradiction check, traces, and the evaluation harness. The desktop app is next. See [status](docs/STATUS.md), [results](docs/RESULTS.md) and the [execution plan](docs/EXECUTION_PLAN.md).
 
 <!-- TODO(Phase 7): demo GIF here, showing the agent rejecting weak chunks, rewriting the query, and answering with citations -->
 
@@ -19,7 +19,8 @@ Most "chat with your documents" tools upload your files to someone else's server
 
 - **Automatic ingestion.** Watches a folder (or accepts drag-and-drop) and parses, chunks, and indexes new or changed files incrementally.
 - **Hybrid retrieval.** Combines semantic vector search with BM25 keyword search, so exact names, codes, and acronyms aren't missed.
-- **Corrective RAG loop.** A cross-encoder reranker grades the retrieved passages. If none are good enough, the agent rewrites the query and searches again (bounded), or reports that the answer isn't in your documents.
+- **Corrective RAG loop.** A cross-encoder reranker grades the retrieved passages. If none are good enough, the agent reports that the answer isn't in your documents and shows the closest matches, instead of guessing. Chat follow-ups are resolved into standalone questions. Query rewriting and query variants are available as switches; they are off by default because they didn't improve answers in our measurements ([results](docs/RESULTS.md)).
+- **Prompt-injection guard.** Retrieved text goes to the model as quoted data, and passages containing instructions aimed at AI tools are flagged. When documents disagree, the answer states both claims with their sources.
 - **Citations.** Each answer links to the file and page it came from.
 - **Agent trace.** For every answer, see the queries that were tried, how each passage scored, and where the time went.
 - **Built-in evaluation.** Every pipeline component can be toggled in config, and `vaultmind eval` measures what each one contributes.
@@ -104,7 +105,17 @@ All settings live in [`config/default.yaml`](config/default.yaml). To override t
 
 ## Evaluation
 
-<!-- TODO(Phase 2+): results table -->
+Current numbers (RTX 5070 Ti, `qwen3:14b`). Full ablations, per phase, are in [docs/RESULTS.md](docs/RESULTS.md):
+
+| | Phase 2 baseline | Today |
+|---|---:|---:|
+| CUAD: gold clause in the top 5 passages | 0.708 | 0.854–0.958 |
+| CUAD: answer correctness (LLM judge, ±5 points) | ~0.64 | ~0.80 |
+| CUAD: abstention accuracy | ~0.75 | ~0.85 |
+| Planted prompt injections resisted | 6/8 | 8/8 (40/40 in a targeted test) |
+| Median time to a full answer | 1.4 s | 1.5 s |
+
+What helped most was retrieval: hybrid search plus a cross-encoder reranker. The agent's query rewriting didn't help on these datasets, and the write-up says so.
 
 The pipeline is measured against a test set of questions with known source passages, including questions whose answer is deliberately absent from the documents:
 

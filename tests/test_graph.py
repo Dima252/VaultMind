@@ -88,7 +88,9 @@ def store(tmp_path: Path) -> Iterator[tuple[ChunkIndex, Registry]]:
 def _cfg(**sections: dict[str, Any]) -> Config:
     """Small, deterministic defaults: vector search over the whole tiny index, then rerank."""
     retrieval = {"hybrid": False, "candidates": 20, "rerank": True} | sections.get("retrieval", {})
-    agent = {"query_variants": 0, "rewrite": True} | sections.get("agent", {})
+    agent = {"query_variants": 0, "rewrite": True, "detect_contradictions": False} | sections.get(
+        "agent", {}
+    )
     return Config.model_validate({"retrieval": retrieval, "agent": agent})
 
 

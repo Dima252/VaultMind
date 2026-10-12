@@ -58,7 +58,7 @@ class AgentConfig(_Section):
     rewrite: bool = False  # measured: recovered 0 of 4 rewritten questions (RESULTS.md)
     max_rewrites: int = Field(default=2, ge=0)
     injection_guard: bool = True
-    detect_contradictions: bool = False
+    detect_contradictions: bool = True  # runs only when sources span 2+ files
     groundedness_check: bool = False
 
 

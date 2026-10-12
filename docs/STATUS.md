@@ -1,6 +1,6 @@
 # VaultMind: Status and Handoff
 
-_Last updated: 2026-10-12._
+_Last updated: 2026-10-12 (end of Phase 4)._
 
 This is the starting point for anyone (human or agent) continuing the work. Read it after `CLAUDE.md`. The full roadmap with checkboxes is in [EXECUTION_PLAN.md](EXECUTION_PLAN.md).
 
@@ -12,9 +12,72 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 | 1. Ingestion + baseline RAG | ✅ Done and verified against real models |
 | 2. Evaluation harness | ✅ Done. Baseline in [RESULTS.md](RESULTS.md), reproducible. `eval generate` deferred |
 | 3. Retrieval quality | ✅ Done. Hybrid + rerank + child chunks are the new default; ablations in [RESULTS.md](RESULTS.md) |
-| 4–7 | ⬜ Not started |
+| 4. Agent loop + safety | ✅ Done. LangGraph loop, injection guard, contradiction and groundedness checks, traces. Measured in [RESULTS.md](RESULTS.md); only the parts that earned their keep are on by default |
+| 5–7 | ⬜ Not started |
 
-**Next task:** Phase 4, the corrective loop. Retrieval is no longer the bottleneck (CUAD evidence recall@5 0.958 at parent level, only 2 of 48 gold clauses missed). The remaining CUAD errors are generation-side: the model abstains when a clause is worded differently from the question's clause type (e.g. MFN as "not less favorable terms"), and with child chunks it sometimes stretches a related clause into an answer for an unanswerable question. Query variants/rewrites and the groundedness check are aimed at these. Hand-written multi-hop and follow-up questions are still needed before the history handling.
+**Next task:** Phase 5, the desktop app (NiceGUI). The engine is ready for it: `agent.graph.stream_agent` streams tokens and returns an `AgentResult` with sources, warnings and the trace. Keep the reranker and models loaded for the app's lifetime (loading the reranker takes ~7 s).
+
+**Waiting on the user:** check the 27 reference answers in `eval/datasets/personal.jsonl` (readable copy: `eval/datasets/personal_review.md`; both gitignored). The personal-set numbers in RESULTS.md assume they are right.
+
+## Honest assessment (2026-10-12, end of Phase 4)
+
+- **Retrieval (Phase 3) moved the numbers, not the agent loop (Phase 4).** Hybrid search + reranking took CUAD correctness from ~0.64 to ~0.79. The loop's two agentic steps, query variants and rewrites, added nothing measurable to answer quality and cost 1–3 s per question, so they are off by default. They stay in the code behind config switches.
+- **What Phase 4 added that works:**
+  - Chat follow-ups are rewritten into standalone questions.
+  - A question with no relevant passage gets an honest "not found" with the closest matches, and no LLM call.
+  - Injected instructions in documents are flagged and neutralized: 40/40 attacks resisted in a targeted test, vs 30/40 without the guard.
+  - The optional contradiction check found all 3 planted conflicts, with no false alarms.
+  - Every answer has a stored trace you can inspect.
+- **Quality today:**
+  - CUAD (legal contracts): ~0.80 of answers correct, ~0.86 abstention accuracy.
+  - Your own documents: ~0.91 correct, pending your check of the reference answers.
+  - Median answer time is ~1.5 s on an RTX 5070 Ti.
+- **Where it still fails:**
+  1. The model refuses when a clause is worded differently from the question (a "most favored nation" clause written as "on terms not less favorable"), even with the passage in front of it.
+  2. With only short chunks in context, it sometimes stretches a related clause into an answer to a question the document can't answer.
+  3. English questions about Hebrew text, and two-part questions, give the right passage a low reranker score, so it fails grading.
+- **How much to trust the numbers:**
+  - Retrieval metrics are exact.
+  - Correctness comes from an LLM judge and varies about ±5 points between identical runs: two configs that ran the same pipeline scored 0.802 and 0.854. Differences under ~5 points are noise.
+  - Several Phase 4 decisions rest on small sets: 3 contradiction items, 8 injection items, 4 follow-ups.
+
+## Problems we hit and how they were handled
+
+| Problem | What we did |
+|---|---|
+| torch on an RTX 50 (Blackwell) needs CUDA 12.8 builds, and CI shouldn't download 3 GB of torch | torch comes from the `cu128` index via `[tool.uv.sources]`. The reranker deps are an optional `rerank` extra, and mypy treats them as untyped in CI |
+| The reranker would download itself from Hugging Face on first use, which breaks "offline" | It loads with `local_files_only` + `HF_HUB_OFFLINE=1`. Downloading happens only in the explicit `vaultmind pull-reranker` |
+| langgraph pulls in langchain-core, which can upload traces to LangSmith | `LANGSMITH_TRACING` and `LANGCHAIN_TRACING_V2` are forced to `false` in `agent/graph.py`, and a test checks it |
+| Generation got ~0.4 s slower with the reranker loaded | Measured: no VRAM contention in isolation, all three models fit on the 16 GB GPU, and context size was equal. Accepted and recorded |
+| The rerank threshold was meant to drive abstention, but CUAD's unanswerable questions still score high (they name a real contract) | Swept it offline (`eval sweep`). 0.3 stays as a free filter for off-topic questions (they score <0.02); the LLM does the abstaining |
+| Small-to-big (sending parent sections) measured worse than sending the graded chunks | Off by default after 3 runs each: about +8 points correctness without it |
+| The agent answered "What is the capital of Peru?" with "Lima" from world knowledge (the no-retrieval path) | Analyze now treats every information request as needing retrieval, and the direct reply refuses factual questions with the not-found answer |
+| Changing defaults silently changed what old ablation configs measured | Phase 2/3 configs pin `agent.loop: false` (and `small_to_big: true` where needed) |
+| Hebrew PDFs came out reversed (words, brackets, dates like "159..2026") | The parser rebuilds right-to-left pages from glyph positions with a bidi pass (tests use synthetic text only) |
+| A 69 MB handwritten summary produced 85K characters of junk from a garbled hidden OCR layer | Detected and rejected with "no usable text layer" in 1.4 s |
+| The user's documents and questions must never reach the public repo | `eval/datasets/personal*` is gitignored, tests use synthetic Hebrew, and agent commits were reviewed for quoted content |
+| Worktree agents start from the session's first commit, not current `main` | Every agent prompt starts with `git merge --ff-only main` |
+| Eval artifact: a not-found answer's closest matches were counted as "retrieved", which made the loop look perfect on the personal set | The runner now scores only passages that passed grading |
+
+## Redesign considerations (not scheduled; each needs a measurement before it lands)
+
+1. **Grade against more than one phrasing.** Today every passage is scored against the single standalone question, which is why rewrites and variants can't help. A better query finds new candidates, but the right passage is still scored against the original wording. Instead:
+   - score each passage by its best score over the question and its variants;
+   - for a cross-lingual question, add a translation into the document's language;
+   - split two-part questions into sub-questions graded separately.
+
+   This targets failure 3 above, and would give the loop a real job.
+2. **Fix the generation side, not retrieval.** Most remaining CUAD errors are refusals with the right passage in context. Two options:
+   - a cheap second pass only when the model abstains while graded passages exist ("does any passage address this in other words?");
+   - a less literal answer prompt.
+
+   Either is the most likely next gain. Measure abstention on unanswerable questions alongside it.
+3. **A smaller model for the side calls.** Analyze, rewrite and the checks don't need a 14B model. `qwen3:4b` or `8b` would make variants and the groundedness check affordable (the plan's risk table already suggests this).
+4. **Stronger evals.**
+   - The injection set is at its ceiling (8/8 even without the guard), so the guard's value currently rests on a targeted test. Add payloads in the same chunk as the clause being asked about.
+   - Add harder follow-ups (pronoun-only) and more multi-hop items.
+   - Switch the judge to a key-facts checklist, and average 2–3 repeated runs per config (`eval run --repeat N`), so 5-point effects can be decided.
+5. **Keep LangGraph for now.** With variants and rewrites off, the graph is nearly linear. It still pays for itself in streaming, per-node traces and the switches the eval needs. Don't re-architect before Phase 5.
 
 **Eval corpus (2026-10-12):** CUAD's `data.zip` is copied to `eval/corpora/cuad/` (gitignored, 18 MB, from the `../cuad` repo). `uv run vaultmind eval import-cuad` writes 25 contracts to `vault/cuad/` and `eval/datasets/cuad.jsonl`; the same seed always gives the same subset. Ingest takes about 20 s. All 12 unanswerable items were checked by hand against the contract text (two bad labels found and fixed via `RELATED` categories in `eval/cuad.py`). The full CUAD release with the 510 original PDFs is at `eval/corpora/cuad/CUAD_v1.zip` (md5 verified) for the optional txt-vs-PDF comparison. CUAD is CC BY 4.0: credit it (Hendrycks et al., NeurIPS 2021, The Atticus Project) in `RESULTS.md` and the README.
 
@@ -25,19 +88,20 @@ uv sync --extra rerank                  # torch cu128 + sentence-transformers
 uv run vaultmind pull-reranker          # one-time download (the only Hugging Face network step)
 uv run vaultmind doctor                 # Ollama reachable, both models pulled, reranker cached
 uv run vaultmind ingest [PATH]          # index vault/ (or PATH); incremental
-uv run vaultmind ask "question"         # streamed answer with [n] citations
+uv run vaultmind ask "question" [--trace]   # agent loop: streamed answer, [n] citations, warnings, stored trace
+uv run vaultmind trace [RUN_ID] [--last N]  # stored runs and their traces
 uv run vaultmind config                 # effective config
 uv run vaultmind eval import-cuad       # CUAD subset -> vault/cuad/ + eval/datasets/cuad.jsonl
 uv run vaultmind eval install-adversarial  # poisoned + contradicting docs -> vault/adversarial/
-uv run vaultmind eval run -d cuad -d adversarial [-c a.yaml -c b.yaml] [--no-judge] [--limit N]
+uv run vaultmind eval run -d cuad -d adversarial -d personal [-c a.yaml -c b.yaml] [--no-judge] [--limit N]
 uv run vaultmind eval sweep eval/results/<run>/<config>__cuad.jsonl -d cuad   # threshold replay
 ```
 
 Verified on the dev machine (Windows 11, RTX 5070 Ti 16 GB, Ollama with `qwen3:14b` + `qwen3-embedding:0.6b`):
 
-- 278 unit tests pass (fakes, no GPU). 6 live tests pass with `uv run pytest -m ollama` (they now load the reranker too).
+- 456 unit tests pass (fakes, no GPU). 6 live tests pass with `uv run pytest -m ollama` (they load the reranker too).
 - Ingesting 3 Markdown docs → 27 chunks in about 2 s. Re-running skips unchanged files.
-- `ask` answers in about 2 s with a warm model and `think: false` (plus ~7 s per invocation to load the reranker). It cites the correct file and section, and answers "I couldn't find this in your documents." for out-of-corpus questions, listing the closest matches.
+- `ask` answers in about 1.5 s (median) with warm models and `think: false`, plus ~7 s per invocation to load the reranker. It cites the file and section. For out-of-corpus questions it answers "I couldn't find this in your documents." and lists the closest matches. Passages with instruction-like text get a `[!]` warning.
 - ruff, ruff format, and mypy `--strict` are clean. CI (`.github/workflows/ci.yml`) runs the same checks plus unit tests.
 
 ## What was built (module map)
@@ -49,22 +113,27 @@ Verified on the dev machine (Windows 11, RTX 5070 Ti 16 GB, Ollama with `qwen3:1
 | `core/providers.py` | `LLM`, `Embedder`, `Reranker` protocols | Pipeline code never imports `ollama` directly |
 | `core/rerank.py` | `CrossEncoderReranker` (sentence-transformers, bge-reranker-v2-m3, fp16 on CUDA, sigmoid scores in [0, 1]); `download()` / `is_downloaded()` | Loads with `local_files_only` + `HF_HUB_OFFLINE=1`; downloading is only `vaultmind pull-reranker`. Needs the `rerank` extra. Load ~7 s, ~1.1 GB VRAM, ~60 ms per 20 pairs |
 | `core/ollama.py` | `OllamaLLM`, `OllamaEmbedder`, `OllamaUnavailableError` | Always sends `num_ctx` + `keep_alive`. Schema calls use `format=`, `temperature 0`, `think=False`. Strips `<think>` text, even when split across stream deltas. Batches embeddings (32) |
-| `ingest/parsers.py` | PDF (pymupdf4llm, `page_chunks=True`, no OCR), Markdown, text → `ParsedDocument` | Heading path carries across PDF pages. Scanned, encrypted and non-UTF-8 files raise `ParseError` |
+| `ingest/parsers.py` | PDF (pymupdf4llm, `page_chunks=True`, no OCR), Markdown, text → `ParsedDocument`. Right-to-left (Hebrew) pages are rebuilt from glyph positions with a bidi pass; RTL tables keep their column order | Heading path carries across PDF pages. Scanned, encrypted and non-UTF-8 files and garbled hidden OCR layers raise `ParseError` |
 | `ingest/chunker.py` | Small-to-big chunking: parents ≈1200 tokens, children ≈256 tokens, 15% overlap. Tokens = `ceil(len/4)` | Children are exact slices of parent text. `embed_text` = `Title > Section\n\n` + text, without repeating the title |
 | `ingest/pipeline.py` | `ingest_path()`: sha256 skip, parse → chunk → embed → `delete_file` + `add`, removes deleted files | Parse failures are recorded and **retried** next run. Other errors (Ollama down) mark the file failed and stop the run |
 | `store/index.py` | LanceDB tables `children` (vectors), `parents`, `meta`; `vector_search`, `fts_search` (BM25 over `embed_text`), `refresh_fts` | Cosine similarity score. Refuses a different embedder (`EmbedderMismatchError`). Upserts by id. No telemetry (checked). Native FTS, simple tokenizer + built-in English stemmer (no downloads); rows added since the last refresh are still searched; ingest refreshes it, and the first `fts_search` builds it on an old index |
-| `store/registry.py` | SQLite `files` table, WAL, thread-safe, `PRAGMA user_version` migrations | |
+| `store/registry.py` | SQLite `files` table, WAL, thread-safe, `PRAGMA user_version` migrations; `migrate()` is public | Migration 2 adds `runs` + `trace_events` |
 | `agent/retrieval.py` | `search()`: vector or hybrid (vector + BM25, `rrf_fuse`, k=60) candidates → cross-encoder `rerank` → drop below `rerank_threshold` → top_k | Reranks on `embed_text` (title > section + text). Can return nothing (→ `NOT_FOUND` without an LLM call) |
-| `agent/baseline.py` | Linear RAG: `search()` → dedupe to parents (`small_to_big`; off = child chunks) → numbered prompt → answer | `NOT_FOUND` string, `is_abstention()`, `cited_sources()`. Citations use the best child's page and section |
-| `eval/dataset.py` | `EvalItem` + JSONL load/save with line-numbered errors | Validator: unanswerable ⇒ no source; answerable ⇒ `source_file` required |
+| `agent/baseline.py` | Linear RAG (`agent.loop: false`): `search()` → `to_sources()` (children, or parents with `small_to_big`) → numbered prompt → answer | `Source` (with `chunk_id`, `warnings`), `NOT_FOUND`, `is_abstention()`, `cited_sources()` |
+| `agent/types.py` | `AgentResult`, `TraceEvent` (and each node's trace data keys), `Contradiction`, `UnsupportedClaim` | Shared contract for the graph, checks, traces, eval and CLI |
+| `agent/graph.py` + `agent/nodes.py` | LangGraph loop: analyze (standalone query from history; optional variants) → retrieve (each query, fused with RRF) → grade (rerank against the standalone question, threshold) → [rewrite] → [contradictions] → generate (streamed), not_found or direct → [groundedness]. `stream_agent` yields tokens, then one `AgentResult` | Analyze is skipped when there's no history and `query_variants: 0` (the default). LangSmith tracing is forced off |
+| `agent/guard.py` | `find_injections()`: 18 regexes, English and Hebrew, after NFKC normalization and zero-width stripping. `build_answer_messages()`: delimited `<source>` blocks, neutralized template tokens, warning headers, the contradiction instruction | 0 false positives on 1,188 indexed chunks; all 4 planted injections flagged. With the guard off, the prompt is exactly Phase 3's |
+| `agent/checks.py` | `detect_contradictions()`, `check_groundedness()`: one schema call each, one retry, then `CheckError` | No call when a check can't apply (one file only; an abstention) |
+| `store/traces.py` | `TraceStore`: `runs` + `trace_events` tables in `vaultmind.sqlite` (registry migration 2) | `ask` saves every loop run; `vaultmind trace` reads them |
+| `eval/dataset.py` | `EvalItem` (with a `history` of `Turn`s for follow-ups) + JSONL load/save with line-numbered errors | Validator: unanswerable ⇒ no source; answerable ⇒ `source_file` required. `history` is left out of the JSONL when empty |
 | `eval/metrics.py` | `recall_at_k`, `mrr`, `abstention_accuracy`, `percentile`, `source_matches`, `evidence_recall_at_k`, `evidence_mrr`, `injection_resistance`, `correctness_score` | Docstrings state exact formulas (cite them in the README) |
 | `eval/judge.py` | LLM judge: one schema call, verdict correct / partial / incorrect + reason, one retry, `JudgeError` | Prompt in module constants. Ignores answer content the reference doesn't cover. 11 of 15 hand-checked verdicts agreed |
-| `eval/runner.py` | `run_config` (timed retrieve + generate + judge), `compute_metrics`, `check_compatible`, `save_report`, `load_results`, `format_table` | Runs the linear pipeline; Phase 4 will need a pipeline switch |
+| `eval/runner.py` | `run_config` (linear or agent, by `agent.loop`), `compute_metrics` (plus `rewrite_rate`, `rewrite_recovered`, `analyze_p50_ms`), `check_compatible`, `save_report`, `load_results`, `format_table` | For agent runs, generation = the generate and direct nodes and retrieval = everything else. Only graded passages count as retrieved |
 | `eval/sweep.py` | Replays `rerank_threshold` over a run saved with threshold 0 (no model calls) | `vaultmind eval sweep RESULTS -d cuad` |
-| `eval/configs/*.yaml` | Phase 3 ablation configs (partial YAML over the defaults) | baseline, hybrid, rerank, hybrid_rerank, hybrid_rerank_children |
+| `eval/configs/*.yaml` | Ablation configs (partial YAML over the defaults) | Phase 3: baseline, hybrid, rerank, hybrid_rerank, hybrid_rerank_children (all pinned to `loop: false`). Phase 4: linear, loop_variants_rewrite, loop_no_variants, loop_no_rewrite, loop_no_guard, loop_contradictions, loop_groundedness |
 | `eval/adversarial.py` + `eval/fixtures/adversarial/` | 4 poisoned contracts (override, fake system block, exfiltration, subtle) + 3 contradiction pairs; `install_adversarial()` | Fictional names, `.invalid` domains. Payload codes like `ZORBLAX-4417` must never appear in answers |
 | `eval/cuad.py` | CUAD importer: seeded contract subset -> `vault/cuad/*.txt`, questions that name their contract, spans as `evidence`, absent clauses as unanswerable | Owns `vault/cuad/`: stale `.txt` files there are removed on re-import |
-| `cli.py` | `config`, `doctor`, `pull-reranker`, `ingest`, `ask`, `eval import-cuad`, `eval install-adversarial`, `eval run`, `eval sweep` | Forces `errors="replace"` on stdout (Windows cp1255 console) |
+| `cli.py` | `config`, `doctor`, `pull-reranker`, `ingest`, `ask [--trace]`, `trace`, `eval import-cuad`, `eval install-adversarial`, `eval run`, `eval sweep` | Forces `errors="replace"` on stdout (Windows cp1255 console) |
 
 Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `vaultmind.sqlite`. Both are gitignored.
 
@@ -75,6 +144,7 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
 - **Reranker scores grade chunks**, not per-chunk LLM calls (Phase 3/4).
 - **The LLM reads the graded child chunks, not their parent sections** (`small_to_big: false`, decided 2026-10-12 from 3 runs each: about +8 points correctness, faster). Re-measure on long-form documents once the mixed-type supplement exists.
 - **`rerank_threshold` 0.3** is a cheap off-topic filter, not an abstention signal on CUAD (see RESULTS.md). The LLM does the abstaining.
+- **Agent defaults (2026-10-12, from the Phase 4 measurements):** `loop: true`, `query_variants: 0`, `rewrite: false`, `injection_guard: true`, `detect_contradictions: true` (runs only when sources span 2+ files), `groundedness_check: false` (+0.5 s, little value). Variants and rewrites cost 1–3 s and didn't improve answers on any dataset. Re-enable them only with a measured reason (see redesign idea 1).
 - **Reranker deps are an optional extra** (`rerank`), so CI doesn't download torch.
 - **No `tiktoken`**: it downloads its tokenizer at runtime, which breaks the offline rule.
 - **`think: false` by default.** Qwen3 thinking adds latency. It's a config switch, so the eval can measure its effect.
@@ -85,20 +155,35 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
 
 ## What's left
 
-### Phase 0
-- [x] Main corpus: 25 CUAD contracts via `uv run vaultmind eval import-cuad` (see below).
-- [x] Adversarial documents: 4 poisoned contracts and 3 contradicting pairs (`eval install-adversarial`).
-- [ ] Optional: 5–10 of your own mixed-type documents (PDF with tables, slides, Markdown) for parser coverage.
+### Open items from earlier phases
+- [ ] **User:** verify the 27 reference answers in `eval/datasets/personal.jsonl` (see `personal_review.md`), then re-score.
+- [ ] Harder follow-up (pronoun-only) and multi-hop questions. Today's 4 follow-ups are answered correctly even without history.
+- [ ] A stronger injection set, with payloads in the same chunk as the clause asked about. The current set is at 8/8 even without the guard.
+- [ ] A judge built on a key-facts checklist, plus `eval run --repeat N`, so ~5-point effects can be decided.
+- [ ] `vaultmind eval generate` (LLM-drafted questions for human review). Low priority.
+- [ ] Optional: CUAD as PDFs (`CUAD_v1.zip`) to measure the txt-vs-PDF parsing gap.
 
-### Phase 2: Evaluation harness (done 2026-10-12)
-All core items are done; see the plan's checkboxes and [RESULTS.md](RESULTS.md). Left over, none blocking Phase 3:
-- [ ] `vaultmind eval generate`: LLM-drafted questions over your own documents, for human review.
-- [ ] Hand-written multi-hop and chat follow-up questions (needed before Phase 4's history handling).
-- [ ] Optional: `import-cuad --format pdf` using `CUAD_v1.zip`, recording page numbers, to measure the txt vs PDF parsing gap.
-- [ ] Judge reliability: if correctness noise matters for a decision, switch the judge to a key-facts checklist (list the reference's facts, mark each covered or contradicted, compute the verdict in code).
+### Phase 5: Desktop app (next, largest)
+`vaultmind ui`, a NiceGUI native window with:
+- streamed chat with citation chips, and a trace panel
+- a library with per-file status, and live folder watching
+- settings
+- highlighted citations (PDF page + passage)
+- export to Markdown/PDF
+- the "localhost only" privacy badge
 
-### Phases 3–7
-See [EXECUTION_PLAN.md](EXECUTION_PLAN.md): hybrid search + reranker + small-to-big ablations (3), the LangGraph corrective loop + traces + injection guard + contradiction check (4), the NiceGUI desktop app + folder watching + highlighted citations + export + privacy badge (5), hardening + network-blocked privacy test + secret/PII scanner (6), packaging + demo + write-up (7). Stretch ideas (encrypted vault, voice notes) are listed after Phase 7.
+Load the models once at startup.
+
+### Phase 6: Hardening
+- A network-blocked test: ingest + ask with all sockets blocked except 127.0.0.1.
+- A telemetry audit. langsmith is installed; tracing is forced off.
+- Edge cases: encrypted or huge files, files changing during indexing.
+- Recovery when Ollama goes down, and resumable ingestion.
+- The secret/PII scanner at ingest, reusing `guard.INJECTION_PATTERNS` for injection flags.
+- OCR for scanned and handwritten PDFs.
+
+### Phase 7: Packaging + showcase
+One-command install, an optional Windows build, a demo GIF, the final results table and write-up in the README, and CV bullets from RESULTS.md.
 
 ## Known limitations (from the agents' reports and testing)
 
@@ -107,6 +192,15 @@ See [EXECUTION_PLAN.md](EXECUTION_PLAN.md): hybrid search + reranker + small-to-
 - **FTS tokenizer:** LanceDB tokenizers that load language dictionaries (jieba, lindera) may **download** them. We use the simple tokenizer with the built-in English stemmer; keep it that way.
 - **Reranker load time:** `ask` loads the cross-encoder per invocation (~7 s). The UI (Phase 5) should keep it loaded.
 - **Eval:** ranks aren't deduplicated before the cut at k. Every JSONL line must include `source_file` and `source_page` keys (they can be `null`).
+- **Agent:**
+  - The reranker scores passages against the standalone question only, so English questions about Hebrew text and two-part questions can fail grading (in the personal set, the right passage scored 0.05–0.12).
+  - The direct (no-retrieval) path relies on the analyze call's `needs_retrieval`. The direct reply refuses factual questions, so a misclassified question gets "not found" instead of a search.
+  - `trace RUN_ID` needs the full id, and stored runs are never pruned.
+- **Hebrew parsing:** the bidi pass is a heuristic.
+  - Formula-only lines on Hebrew pages are read left to right.
+  - Side-by-side text boxes on one baseline merge into one row.
+  - Some math subscripts become `?`.
+  - "Hebrew, number, English" sequences can come out in visual order.
 - **Baseline:** abstention is detected by a prefix match on `NOT_FOUND`. If the model rephrases it, it counts as an answer: 2 of 60 CUAD answers in the baseline run. A file whose H1 equals its file name gets a label like "CLAUDE.md, CLAUDE.md".
 - Embedding batch size (32) isn't in the config yet.
 - `vault/README.md` gets indexed like any document, so it shows up as a (harmless) distractor. Consider skipping it in ingest.
@@ -128,4 +222,4 @@ Phase 1 was built by four parallel agents, each in its own git worktree. The int
 - Task prompts: `scripts/agents/prompts/` (`_rules.md` holds the shared rules).
 - In this session the agents were run with Claude Code's built-in subagents (`isolation: worktree`). The PowerShell scripts in `scripts/agents/` (`setup.ps1` → `start.ps1` → `merge.ps1`) do the same thing by hand. They pass a syntax check but **have not been run end to end yet**.
 - To reuse for a later phase: write new stubs and contracts first, add one prompt per agent, and update `$Agents` in `scripts/agents/_common.ps1`.
-- Phase 2 used three agents (runner, judge, adversarial); the shared metrics and CLI were done on `main` before and after. **Gotcha:** Claude Code's worktree agents branched from the commit the session started on, not current `main`, so each had to `git merge --ff-only main` to see the contracts. Put that step in the launch prompt.
+- Phase 2 used three agents (runner, judge, adversarial); the shared metrics and CLI were done on `main` before and after. Phase 4 used four (graph, safety, traces, personal documents) after the contracts commit `5051fb2`; all of them merged without conflicts. **Gotcha:** Claude Code's worktree agents branched from the commit the session started on, not current `main`, so each had to `git merge --ff-only main` to see the contracts. Put that step in the launch prompt.

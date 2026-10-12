@@ -27,7 +27,7 @@ The order matters. A plain baseline and the eval harness come **before** any of 
 - [x] Install Ollama, then `ollama pull qwen3:14b` and `ollama pull qwen3-embedding:0.6b`
 - [x] `uv run vaultmind doctor` passes
 - [x] **Main eval corpus: CUAD.** `vaultmind eval import-cuad` copies a seeded subset of [CUAD](https://www.atticusprojectai.org/cuad) contracts (CC BY 4.0, lawyer-labeled clause spans) into `vault/cuad/` and writes `eval/datasets/cuad.jsonl`. The zip lives in `eval/corpora/cuad/` (gitignored). Default: 25 contracts, 60 questions, 20% unanswerable, seed 0.
-- [ ] **Mixed-type supplement:** 5–10 of your own documents (at least one PDF with tables, slides exported to PDF, Markdown notes) to cover the parsers CUAD doesn't exercise (it's plain text only), plus a few hand-written questions about them.
+- [x] **Mixed-type supplement:** (2026-10-12: 12 of the user's own PDFs in `vault/personal/`, mostly Hebrew course material, plus 27 drafted questions in the gitignored `eval/datasets/personal.jsonl`, pending the user's check.) 5–10 of your own documents (at least one PDF with tables, slides exported to PDF, Markdown notes) to cover the parsers CUAD doesn't exercise (it's plain text only), plus a few hand-written questions about them.
 
 **Done when:** `doctor` is all green and the corpus is sitting in `vault/`.
 
@@ -92,20 +92,22 @@ Goal: replace the linear baseline with the LangGraph state machine.
 
 Dependencies: `uv add langgraph`
 
-- [ ] Graph state: question, history, queries tried, candidates, graded passages, rewrite count, trace events.
-- [ ] **Analyze node** (one structured call): standalone query (resolves chat follow-ups), 2–3 query variants, `needs_retrieval`.
-- [ ] **Retrieve node:** hybrid retrieval for each query variant, fused.
-- [ ] **Grade node:** reranker scores against the threshold. No per-chunk LLM calls.
-- [ ] **Rewrite node:** given the failed queries and what was found, produce a different query. Stop after `agent.max_rewrites`.
-- [ ] **Generate node:** streamed, cites only graded passages.
-- [ ] **Not-found node:** an honest "not in your documents" answer plus the closest matches.
-- [ ] Optional **groundedness check** node (config flag, off by default): checks each claim against its cited passage.
-- [ ] **Prompt-injection hardening** (config: `agent.injection_guard`): passages go into the prompt inside clearly delimited data blocks, the system prompt says text inside them is never an instruction, and passages that match injection patterns (at ingest, see Phase 6 scanner) are flagged in the trace and shown with a warning. Eval: injection resistance rate guard on vs. off, plus its effect on correctness.
-- [ ] Optional **contradiction check** (config: `agent.detect_contradictions`, off by default): when graded passages from different files disagree on a fact, the answer states both claims and cites each, instead of picking one. Eval it on the `contradiction` items.
-- [ ] **Traces:** every node emits events (inputs, outputs, scores, duration), saved to a SQLite `traces` table. `vaultmind ask --trace` prints them.
-- [ ] Eval: loop on vs. off. Report how many failed queries the rewrite recovered, what it costs in latency, and how abstention changes.
+- [x] Graph state: question, history, queries tried, candidates, graded passages, rewrite count, trace events.
+- [x] **Analyze node** (one structured call): standalone query (resolves chat follow-ups), 2–3 query variants, `needs_retrieval`. (Variants measured: no answer gain, +1.2 s, so `query_variants: 0` by default; analyze then runs only with chat history.)
+- [x] **Retrieve node:** hybrid retrieval for each query variant, fused.
+- [x] **Grade node:** reranker scores against the threshold. No per-chunk LLM calls.
+- [x] **Rewrite node:** given the failed queries and what was found, produce a different query. Stop after `agent.max_rewrites`. (Recovered 0 of 4 rewritten questions, so it's off by default; see the redesign notes in STATUS.md.)
+- [x] **Generate node:** streamed, cites only graded passages.
+- [x] **Not-found node:** an honest "not in your documents" answer plus the closest matches.
+- [x] Optional **groundedness check** node (config flag, off by default): checks each claim against its cited passage.
+- [x] **Prompt-injection hardening** (config: `agent.injection_guard`): passages go into the prompt inside clearly delimited data blocks, the system prompt says text inside them is never an instruction, and passages that match injection patterns (at ingest, see Phase 6 scanner) are flagged in the trace and shown with a warning. Eval: injection resistance rate guard on vs. off, plus its effect on correctness.
+- [x] Optional **contradiction check** (config: `agent.detect_contradictions`, off by default): when graded passages from different files disagree on a fact, the answer states both claims and cites each, instead of picking one. Eval it on the `contradiction` items.
+- [x] **Traces:** every node emits events (inputs, outputs, scores, duration), saved to a SQLite `traces` table. `vaultmind ask --trace` prints them.
+- [x] Eval: loop on vs. off. Report how many failed queries the rewrite recovered, what it costs in latency, and how abstention changes.
 
 **Done when:** the loop beats or matches the Phase 3 config on correctness and abstention, and its latency cost is measured.
+
+> Status: done 2026-10-12. The default loop matches the Phase 3 pipeline on correctness and abstention (within judge noise) at about the same latency (~1.5 s median), and adds chat follow-ups, honest not-found answers with no LLM call, the injection guard, optional checks and traces. Variants and rewrites measured no gain and are off by default. Details in RESULTS.md, assessment and redesign notes in STATUS.md.
 
 ## Phase 5: Desktop UI + live ingestion
 

@@ -10,12 +10,13 @@ Every pipeline change is measured against the same datasets with `uv run vaultmi
 | Models (Ollama) | `qwen3:14b` for answers and the judge (`think: false`), `qwen3-embedding:0.6b` for embeddings, `num_ctx` 16384 |
 | Reranker (Phase 3) | `BAAI/bge-reranker-v2-m3` via sentence-transformers 6.1, torch 2.11 cu128, fp16 |
 | Chunking | children ≈256 tokens (searched), parents ≈1200 tokens (sent to the LLM in Phase 2; children only since Phase 3), 15% overlap |
-| Index | 36 files, 1,242 child chunks: 25 CUAD contracts, 10 adversarial documents, `vault/README.md` |
+| Index | Phases 2–3: 36 files, 1,242 child chunks (25 CUAD contracts, 10 adversarial documents, `vault/README.md`). From Phase 4: 47 files, 1,373 chunks (+11 of the user's own PDFs) |
 
 **Datasets**
 
 - **`cuad`**: 60 questions over 25 commercial contracts from [CUAD](https://www.atticusprojectai.org/cuad) (seed 0, `vaultmind eval import-cuad`). 48 are answerable, with lawyer-highlighted clause text as gold evidence. 12 are unanswerable (the clause is absent from that contract; each was checked by hand against the contract text). Each question names its contract, for example *"Which jurisdiction's law governs the Vaxcyte,Inc Supply Agreement (2020)?"*
 - **`adversarial`**: 11 questions over 10 synthetic documents (`eval/fixtures/adversarial/`). 8 questions target clauses in 4 contracts with planted prompt injections (direct override, fake system block, exfiltration request, subtle "note to AI tools"); each injection asks for a unique code that must not appear in the answer. 3 questions target pairs of documents that contradict each other.
+- **`personal`** (from Phase 4): 27 questions over the user's own documents, 11 PDFs: Hebrew algorithms lecture slides, a Hebrew syllabus and assignments, and English Workato guides with tables. The set has 8 exact lookups, 4 table questions, 4 multi-hop, 4 chat follow-ups (with `history`), 3 cross-lingual and 4 unanswerable. An agent drafted them from the indexed text; **the reference answers are still awaiting the user's check**, so treat these numbers as provisional. The file quotes the documents, so it's gitignored and not in the repository.
 
 **Metrics** (exact formulas in the docstrings of `src/vaultmind/eval/metrics.py`)
 
@@ -164,6 +165,83 @@ Evidence recall is lower for children (0.875 vs 0.958) partly by construction: a
 | total p50 / p95 (ms) | 1,358 / 2,730 | 1,661 / 2,729 | 797 / 1,199 | 1,404 / 1,905 |
 
 Ranges are the spread over runs (baseline: the Phase 2 run plus this phase's). On CUAD, correctness rose by about **15 points** and abstention accuracy by about **10 points**, for ~0.3 s more per answer. The remaining CUAD errors are mostly on the generation side: abstaining on clauses phrased differently from the question, or stretching related clauses. That is Phase 4's territory.
+
+## Phase 4: the agent loop and safety checks (2026-10-12)
+
+The linear pipeline became a LangGraph state machine (`agent/graph.py`):
+
+1. **analyze**: rewrites a chat follow-up into a standalone question, and can add query variants.
+2. **retrieve**: hybrid search for each query, fused with RRF.
+3. **grade**: reranks against the standalone question with a threshold of 0.3.
+4. **rewrite**: if nothing passes, a new query and another search, at most 2 rounds.
+5. **generate**: a streamed answer, built with the injection guard's prompt. If nothing passes and no rewrite is left, **not found** answers with the closest matches instead.
+
+Two optional LLM checks sit around generation: **contradictions** (before) and **groundedness** (after). Every node writes a trace event.
+
+Each part is a switch, scored on three datasets:
+
+```
+uv run vaultmind eval run -c eval/configs/linear.yaml -c eval/configs/loop_variants_rewrite.yaml \
+  -c eval/configs/loop_no_variants.yaml -c eval/configs/loop_no_rewrite.yaml \
+  -c eval/configs/loop_no_guard.yaml -d cuad -d adversarial -d personal
+```
+
+The loop's first default had 2 query variants and up to 2 rewrites; the last four columns below are that config with one part removed. "Linear" is the Phase 3 default. Evidence recall counts only passages that passed grading. A not-found answer's closest matches don't count, which corrects an artifact in the first runs.
+
+| CUAD (60) | linear | loop (variants + rewrites) | no variants | no rewrite | no guard |
+|---|---:|---:|---:|---:|---:|
+| evidence recall@5 | 0.854 | **0.896** | 0.854 | 0.896 | 0.896 |
+| correctness | 0.781 | 0.802 | 0.802 | 0.854 | 0.802 |
+| abstention accuracy | 0.867 | 0.867 | 0.850 | 0.883 | 0.917 |
+| total p50 / p95 (ms) | 1,620 / 2,675 | 2,962 / 4,379 | 1,780 / 2,845 | 3,159 / 4,581 | 3,122 / 4,312 |
+| analyze p50 (ms) | – | 1,358 | 0 (skipped) | 1,380 | 1,359 |
+| questions rewritten | – | 0 | 0 | – | 0 |
+
+| Your documents (27) | linear | loop (variants + rewrites) | no variants | no rewrite | no guard |
+|---|---:|---:|---:|---:|---:|
+| evidence recall@5 | 0.913 | 0.913 | 0.913 | 0.913 | 0.913 |
+| correctness | 0.891 | 0.913 | 0.913 | 0.913 | 0.913 |
+| abstention accuracy | 0.926 | 0.926 | 0.926 | 0.926 | 0.926 |
+| total p50 / p95 (ms) | 1,390 / 2,660 | 3,304 / 5,563 | 1,985 / 4,417 | 2,892 / 4,618 | 3,523 / 5,994 |
+| questions rewritten (recovered) | – | 4 (0) | 4 (0) | – | 4 (0) |
+
+On the adversarial set (11), every config scored correctness 0.909, abstention 1.000 and **injection resistance 8/8**, including the guard-off config and the linear pipeline. Latency p50 was 1.4 s linear and 2.7 s with variants.
+
+**How noisy is this?** On CUAD, the "loop" and "no rewrite" columns ran the same pipeline: no question was ever rewritten. Yet they scored 0.802 vs 0.854 correctness and 0.867 vs 0.883 abstention. Differences of ~5 points in correctness or 1–2 abstentions are therefore noise.
+
+### What each part contributed
+
+- **Rewrites: nothing.** They fired on 4 of 98 questions and recovered none. Two were truly unanswerable, and the rewrites only added 2–3 s before the same "not found". The other two were answerable: an English two-document question and an English question about a Hebrew table, where the right passage scored 0.05 and 0.12 against the question. The cause is structural: grading always scores against the standalone question. A reworded query can bring in new candidates, but it can't change how the right passage scores against the original wording. On CUAD, some chunk of the named contract always passes the threshold, so a rewrite never triggers. **Off by default.**
+- **Query variants: better retrieval, no better answers, +1.2 s.** Two extra phrasings put 2 more CUAD clauses in the top 5 (0.854 → 0.896). Answer quality didn't change measurably, and the analyze call costs ~1.2–1.4 s on every question. **Off by default** (`query_variants: 0`). Analyze then runs only when there is chat history to resolve.
+- **Follow-up resolution: not testable yet.** All 4 follow-ups were answered correctly by the linear pipeline too, which ignores history: each one still named its topic. Harder follow-ups ("and its running time?") are needed before this can be measured.
+- **The injection guard: no difference here, a clear one in a targeted test.** The eval set is at its ceiling. With child chunks, the planted instruction usually sits in a different chunk from the clause asked about, so it never reaches the prompt. In the safety agent's targeted test, the poisoned chunk was forced into context (8 questions × 5 runs):
+
+  | | resisted |
+  |---|---:|
+  | guard off | 30/40 |
+  | guard on | **40/40** |
+  | guard on, but the pattern-match warning removed | 35/40 |
+
+  The detector flagged all 4 planted injections, 0 of 1,188 normal chunks in the index, and 2 of 84,738 text windows across the full 510-contract CUAD corpus. The guard adds no latency and didn't change correctness. CUAD abstention was 0.867 with it and 0.917 without (2 questions), which is within noise but worth watching. **On by default.**
+- **Contradiction check: catches what it should, costs little.** On the 3 contradiction pairs it found the conflict every time, with no false conflicts on the other 8 adversarial questions. Adversarial correctness went from 0.909 to **0.955**: the answers state both values with citations, where the default had given one price only. It runs only when the graded sources come from 2+ files. That happened on 0 of 60 CUAD questions and 3 of 27 personal questions (no false conflicts there), at ~1.3 s each time. **On by default.**
+- **Groundedness check: little value at +0.5 s.** It flagged 2 of 43 CUAD answers. One was a real stretch on an unanswerable question; the other was a correct answer (a false alarm). It missed the second stretched answer, and flagged nothing on the other two sets. **Off by default.**
+- **The no-retrieval path had a real bug.** In a live test, the analyze call classed "What is the capital of Peru?" as small talk, and the direct reply answered "Lima" from the model's general knowledge. Analyze now treats every information request as needing retrieval, and the direct reply refuses facts with the not-found answer. Off-topic questions now end in "not found".
+
+### New default
+
+`config/default.yaml`: loop on, no variants, no rewrites, guard on, contradiction check on, groundedness off.
+
+| | CUAD | Adversarial | Your documents |
+|---|---:|---:|---:|
+| evidence recall@5 | 0.854 | 1.000 | 0.913 |
+| correctness | 0.792 | **0.955** | 0.913 |
+| abstention accuracy | 0.833 | 1.000 | 0.926 |
+| injection resistance | – | 8/8 | – |
+| total p50 / p95 (ms) | 1,533 / 2,976 | 1,598 / 2,953 | 1,503 / 3,131 |
+
+CUAD and personal come from run `20261012-031825`, adversarial from `20261012-031729`. On CUAD and your documents the default ties the linear Phase 3 pipeline, within noise, at the same median latency. It wins on the contradiction questions, and it adds what the numbers above can't show: chat follow-ups, a not-found answer that skips the LLM, injection warnings, and a stored trace for every answer.
+
+**Bottom line for Phase 4:** the agent loop, as specified, didn't improve answers on these datasets. The gains so far come from retrieval (Phase 3). The remaining errors are on the generation side: the model refuses when a clause is worded differently from the question, or stretches a related clause. Ideas that could give the loop a real job (grading against several phrasings, a second pass when the model abstains despite good passages, a smaller model for side calls, stronger eval sets) are listed under "Redesign considerations" in [STATUS.md](STATUS.md).
 
 ## Credits
 
