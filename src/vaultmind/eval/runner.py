@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from vaultmind.agent.baseline import NOT_FOUND, Source, build_messages, is_abstention, retrieve
 from vaultmind.agent.graph import run_agent
@@ -28,6 +29,7 @@ from vaultmind.eval.metrics import (
     percentile,
     recall_at_k,
 )
+from vaultmind.store.cards import CardStore
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
 
@@ -51,6 +53,8 @@ METRIC_NAMES: tuple[str, ...] = (
     "rewrite_rate",
     "rewrite_recovered",
     "analyze_p50_ms",
+    "plan_p50_ms",
+    "lookup_route_rate",
 )
 
 
@@ -87,6 +91,7 @@ class ItemResult:
     node_ms: dict[str, float] = field(default_factory=dict)  # total time per graph node
     unsupported: list[str] = field(default_factory=list)  # groundedness check: flagged claims
     contradictions: list[str] = field(default_factory=list)  # "[a] claim | [b] claim"
+    task: str = "lookup"  # the planner's route (always "lookup" without the router)
 
 
 @dataclass(frozen=True)
@@ -185,7 +190,7 @@ def _agent_item(
     judge_llm: LLM | None,
 ) -> ItemResult:
     answer = result.answer.strip()
-    generation_ms = result.node_ms("generate") + result.node_ms("direct")
+    generation_ms = sum(result.node_ms(n) for n in ("generate", "direct", "respond", "human"))
     node_ms: dict[str, float] = {}
     for event in result.trace:
         node_ms[event.node] = node_ms.get(event.node, 0.0) + event.duration_ms
@@ -213,6 +218,7 @@ def _agent_item(
             f"[{c.source_a}] {c.claim_a} | [{c.source_b}] {c.claim_b}"
             for c in result.contradictions
         ],
+        task=result.task,
     )
 
 
@@ -229,12 +235,14 @@ def run_config(
     reranker: Reranker | None = None,
     judge_llm: LLM | None = None,
     on_item: Callable[[ItemResult], None] | None = None,
+    cards: CardStore | None = None,
 ) -> RunReport:
     """Answer every item and score the run.
 
     With ``agent.loop`` on, each item goes through the corrective agent (`agent.graph`) with
     its chat history; otherwise through the linear pipeline (`agent.baseline`), which ignores
-    history. Timing is split as documented on ItemResult. With ``judge_llm`` None, correctness
+    history; with ``cards`` and ``agent.router`` on, the planner routes each item first, as in
+    the app. Timing is split as documented on ItemResult. With ``judge_llm`` None, correctness
     is not measured: every verdict is None and the ``correctness`` metric is None.
     """
     vault_dir = cfg.paths.vault_dir.resolve()
@@ -251,6 +259,7 @@ def run_config(
                 registry=registry,
                 reranker=reranker,
                 history=[{"role": t.role, "content": t.content} for t in item.history],
+                cards=cards,
             )
             total_ms = _elapsed_ms(start)
             result = _agent_item(i, item, agent_result, total_ms, vault_dir, judge_llm)
@@ -333,6 +342,10 @@ def compute_metrics(
         metrics["analyze_p50_ms"] = _p(
             [r.node_ms["analyze"] for r in agent if "analyze" in r.node_ms], 50
         )
+        planned = [r for r in agent if "plan" in r.node_ms]
+        if planned:
+            metrics["plan_p50_ms"] = _p([r.node_ms["plan"] for r in planned], 50)
+            metrics["lookup_route_rate"] = sum(r.task == "lookup" for r in planned) / len(planned)
     return metrics
 
 
@@ -431,7 +444,20 @@ def format_table(reports: Sequence[RunReport]) -> str:
     return format_repeat_table([[r] for r in reports])
 
 
-def format_repeat_table(runs: Sequence[Sequence[RunReport]]) -> str:
+class Report(Protocol):
+    """What the table needs from a report (`RunReport` and `eval.task_runner.TaskReport`)."""
+
+    @property
+    def config_name(self) -> str: ...
+    @property
+    def dataset_name(self) -> str: ...
+    @property
+    def metrics(self) -> Mapping[str, float | None]: ...
+
+
+def format_repeat_table(
+    runs: Sequence[Sequence[Report]], metric_names: Sequence[str] = METRIC_NAMES
+) -> str:
     """Like `format_table`, with one column per (config, dataset) holding its repeated runs.
 
     A column with one run shows plain values. With several, each metric shows as
@@ -444,7 +470,7 @@ def format_repeat_table(runs: Sequence[Sequence[RunReport]]) -> str:
     header = ["metric"] + [_ascii(f"{g[0].config_name} / {g[0].dataset_name}") for g in runs]
     rows = [
         [name] + [_format_repeats(name, [r.metrics.get(name) for r in group]) for group in runs]
-        for name in METRIC_NAMES
+        for name in metric_names
     ]
     widths = [max(len(row[c]) for row in [header, *rows]) for c in range(len(header))]
 

@@ -189,3 +189,32 @@ def test_no_cards_when_enrich_is_off(tmp_path: Path) -> None:
         assert engine.enricher is None
     finally:
         engine.close()
+
+
+def test_ask_routes_with_the_cards_and_the_previous_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vaultmind.agent.baseline import Source
+    from vaultmind.agent.types import AgentResult
+    from vaultmind.app import engine as engine_module
+
+    calls: list[dict[str, Any]] = []
+    source = Source(1, tmp_path / "vault" / "fees.md", 1, ("Fees",), "Payment text.", 0.9)
+
+    def fake(question: str, cfg: Config, **kwargs: Any) -> Iterator[str | AgentResult]:
+        calls.append(kwargs)
+        yield "Answer [1]."
+        yield AgentResult(question, "Answer [1].", [source], False, [], 0)
+
+    monkeypatch.setattr(engine_module, "stream_agent", fake)
+    engine = _engine_with_cards(tmp_path, LLM(), enrich=False)
+    try:
+        chat = engine.chats.create()
+        list(engine.ask(chat.id, "when is payment due"))
+        list(engine.ask(chat.id, "shorter"))
+    finally:
+        engine.close()
+    assert calls[0]["cards"] is engine.cards
+    assert calls[0]["previous_sources"] == () and calls[0]["history"] == []
+    assert [s.n for s in calls[1]["previous_sources"]] == [1]
+    assert calls[1]["history"][-1] == {"role": "assistant", "content": "Answer [1]."}

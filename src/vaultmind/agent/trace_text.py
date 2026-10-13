@@ -57,6 +57,26 @@ def summarize(node: str, data: dict[str, Any]) -> str:
         return f"{len(data.get('unsupported') or [])} unsupported claim(s)"
     if node == "direct":
         return f"no retrieval: {short(data.get('reason', ''))}"
+    if node == "plan":
+        text = f"task {data.get('task', '?')} -> {data.get('route', '?')}"
+        if mentions := data.get("mentions"):
+            text += ", documents " + " | ".join(short(m, 40) for m in mentions)
+        if missing := data.get("missing"):
+            text += ", not found " + " | ".join(short(m, 40) for m in missing)
+        if data.get("clarify"):
+            text += f", asks {short(data['clarify'], 60)}"
+        return text
+    if node == "tool":
+        args = _compact(data.get("arguments", {}))
+        state = "ok" if data.get("ok") else f"failed: {short(data.get('error', ''), 60)}"
+        return f"{data.get('name', '?')} {args} {state}, {data.get('chars', 0)} chars"
+    if node == "recipe":
+        return f"{data.get('name', '?')} over {len(data.get('documents') or [])} document(s)"
+    if node == "respond":
+        shown = "".join(f"[{n}]" for n in data.get("sources") or []) or "none"
+        return f"{data.get('task', '?')}, sources {shown}"
+    if node == "human":
+        return f"{data.get('kind', '?')}: {short(data.get('prompt', ''))}"
     return _compact(data)
 
 

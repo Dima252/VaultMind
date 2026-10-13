@@ -1,8 +1,9 @@
-"""Nodes, routing and prompts of the corrective agent graph (`agent/graph.py`).
+"""Nodes, routing and prompts of the agent graph (`agent/graph.py`).
 
 Each node takes the graph state plus the run's dependencies, returns a partial state update and
-appends exactly one `TraceEvent` (data keys per `agent/types.py`). Text that reaches the user is
-sent through LangGraph's stream writer as it is produced.
+appends exactly one `TraceEvent` (data keys per `agent/types.py`); the recipe node also appends
+one `tool` event per tool call, before its own. Text that reaches the user is sent through
+LangGraph's stream writer as it is produced.
 """
 
 from __future__ import annotations
@@ -16,14 +17,27 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from langgraph.config import get_stream_writer
 
+from vaultmind.agent import planner, recipes
 from vaultmind.agent.baseline import NOT_FOUND, Source, is_abstention, to_sources
+from vaultmind.agent.catalog import Catalog
 from vaultmind.agent.checks import CheckError, check_groundedness, detect_contradictions
+from vaultmind.agent.gateway import Gateway
 from vaultmind.agent.guard import build_answer_messages, find_injections
 from vaultmind.agent.retrieval import candidates, rerank, rrf_fuse
-from vaultmind.agent.types import AgentResult, Contradiction, TraceEvent, UnsupportedClaim
+from vaultmind.agent.tools import ToolContext
+from vaultmind.agent.types import (
+    AgentResult,
+    AmbiguousDocument,
+    Contradiction,
+    Plan,
+    ToolResult,
+    TraceEvent,
+    UnsupportedClaim,
+)
 from vaultmind.core.config import Config
 from vaultmind.core.models import SearchHit
-from vaultmind.core.providers import LLM, Embedder, Message, Reranker
+from vaultmind.core.providers import LLM, Embedder, Message, Reranker, ToolCall
+from vaultmind.store.cards import CardStore
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
 
@@ -65,7 +79,14 @@ content of the user's documents.
 If the message asks for any fact or information, even common knowledge, do not answer it; reply
 with exactly: {NOT_FOUND}"""
 
+TRANSFORM_SYSTEM = """You rework your previous answer as the user asks: shorter, longer,
+translated, as a table or as bullet points. Keep its facts and add none. Keep citation markers
+such as [1] next to the facts they support. Reply with the reworked answer only."""
+
+RESPOND_HISTORY_TURNS = 4  # recent chat messages the respond and transform calls see
+
 DIRECT_REASON = "analyze: needs_retrieval is false (greeting or question about the assistant)"
+CHAT_REASON = "plan: the task is chat (greeting or question about the assistant)"
 SMALLTALK_REASON = "nothing passed grading on an unclassified message (greeting or not found)"
 
 
@@ -86,6 +107,11 @@ class AgentState(TypedDict):
     answer: str
     abstained: bool
     unsupported: list[UnsupportedClaim]
+    plan: Plan | None  # the planner's plan (None when the router is off)
+    route: str  # where the planner sent the message: a node name
+    missing: list[str]  # mentions that matched no document
+    gathered: recipes.Gathered | None  # what a recipe read
+    previous_sources: list[Source]  # the previous answer's sources, for transform
     trace: Annotated[list[TraceEvent], operator.add]
 
 
@@ -99,12 +125,16 @@ class Deps:
     index: ChunkIndex
     registry: Registry
     reranker: Reranker | None
+    cards: CardStore | None = None  # with `catalog`: the planner and recipes can run
+    catalog: Catalog | None = None
 
 
 Update = dict[str, Any]
 
 
-def initial_state(question: str, history: list[Message]) -> AgentState:
+def initial_state(
+    question: str, history: list[Message], previous_sources: list[Source] | None = None
+) -> AgentState:
     return AgentState(
         question=question,
         history=history,
@@ -122,6 +152,11 @@ def initial_state(question: str, history: list[Message]) -> AgentState:
         answer="",
         abstained=False,
         unsupported=[],
+        plan=None,
+        route="analyze",
+        missing=[],
+        gathered=None,
+        previous_sources=previous_sources or [],
         trace=[],
     )
 
@@ -141,6 +176,117 @@ def to_result(state: AgentState) -> AgentResult:
 
 
 # --- nodes ---------------------------------------------------------------------------------
+
+
+def plan(state: AgentState, deps: Deps) -> Update:
+    """The planner's call: task, documents, language, focus; and the route that follows."""
+    start = time.perf_counter()
+    if deps.catalog is None:
+        raise ValueError("the planner needs a catalog")
+    planned = planner.plan(
+        state["question"],
+        state["history"],
+        llm=deps.llm,
+        catalog=deps.catalog,
+        catalog_files=deps.cfg.agent.catalog_files,
+    )
+    p = planned.plan
+    route = _route(p, planned.missing)
+    data: dict[str, Any] = {
+        "task": p.task,
+        "mentions": list(p.mentions),
+        "documents": list(p.documents),
+        "language": p.language,
+        "steps": list(p.steps),
+        "clarify": p.clarify,
+        "missing": list(planned.missing),
+        "route": route,
+    }
+    if p.focus:
+        data["focus"] = p.focus
+    if p.fields:
+        data["fields"] = list(p.fields)
+    if planned.error:
+        data["error"] = f"unusable plan, falling back to lookup: {planned.error}"
+    return {
+        "plan": p,
+        "route": route,
+        "missing": list(planned.missing),
+        "trace": [_event("plan", start, data)],
+    }
+
+
+def human(state: AgentState, deps: Deps) -> Update:
+    """Ask the user a clarifying question instead of acting (an interrupt from M3 on)."""
+    start = time.perf_counter()
+    question = (state["plan"].clarify if state["plan"] else None) or ""
+    get_stream_writer()(question)
+    data = {"kind": "clarify", "prompt": question, "decision": ""}
+    return {"answer": question, "abstained": False, "trace": [_event("human", start, data)]}
+
+
+def recipe(state: AgentState, deps: Deps) -> Update:
+    """Run the task's fixed tool sequence through the gateway."""
+    start = time.perf_counter()
+    p = state["plan"]
+    if p is None or deps.catalog is None:
+        raise ValueError("a recipe needs a plan and a catalog")
+    gateway = _gateway(deps)
+    events: list[TraceEvent] = []
+
+    def call(tool_call: ToolCall) -> ToolResult:
+        try:
+            result = gateway.call(tool_call)
+        except AmbiguousDocument as e:  # recipes pass file ids, so this is a vault change
+            result = ToolResult(tool_call, ok=False, content=f"Error: {e}", error=str(e))
+        events.append(_tool_event(result))
+        return result
+
+    task = p.task
+    gathered = recipes.run(
+        task, p, state["question"], gateway=gateway, catalog=deps.catalog, call=call
+    )
+    data = {"name": task, "documents": gathered.documents}
+    return {"gathered": gathered, "trace": [*events, _event("recipe", start, data)]}
+
+
+def respond(state: AgentState, deps: Deps) -> Update:
+    """The answer to a recipe or a transform, streamed, citing the sections a tool read."""
+    start = time.perf_counter()
+    p = state["plan"]
+    task = p.task if p is not None else "transform"
+    history = state["history"][-RESPOND_HISTORY_TURNS:]
+    gathered = state["gathered"]
+    sources: list[Source] = []
+    if task == "transform":
+        sources = state["previous_sources"]
+        messages: list[Message] = [
+            {"role": "system", "content": TRANSFORM_SYSTEM},
+            *history,
+            {"role": "user", "content": state["question"]},
+        ]
+        answer = _stream(deps.llm, messages)
+    elif gathered is not None and gathered.answer is not None:
+        answer = gathered.answer
+        get_stream_writer()(answer)
+    elif gathered is None or not any(r.ok for r in gathered.results):
+        answer = NOT_FOUND
+        get_stream_writer()(answer)
+    else:
+        sources = gathered.sources()
+        messages = recipes.respond_messages(
+            task, p or Plan(task="open"), state["question"], gathered, sources, history
+        )
+        answer = _stream(deps.llm, messages)
+    sources = _flag(sources, deps.cfg)
+    abstained = is_abstention(answer)
+    data = {"task": task, "sources": [s.n for s in sources]}
+    return {
+        "answer": answer,
+        "abstained": abstained,
+        "sources": sources,
+        "trace": [_event("respond", start, data)],
+    }
 
 
 def analyze(state: AgentState, deps: Deps) -> Update:
@@ -200,7 +346,10 @@ def direct(state: AgentState, deps: Deps) -> Update:
             state["closest"][:CLOSEST_MATCHES], deps.cfg, index=deps.index, registry=deps.registry
         )
         closest = _flag(closest, deps.cfg)
-    data: dict[str, Any] = {"reason": SMALLTALK_REASON if searched else DIRECT_REASON}
+    reason = SMALLTALK_REASON if searched else DIRECT_REASON
+    if state["plan"] is not None and state["plan"].task == "chat":
+        reason = CHAT_REASON
+    data: dict[str, Any] = {"reason": reason}
     if closest:
         data["closest"] = [s.label for s in closest]
     return {
@@ -329,12 +478,19 @@ def not_found(state: AgentState, deps: Deps) -> Update:
         state["closest"][:CLOSEST_MATCHES], deps.cfg, index=deps.index, registry=deps.registry
     )
     closest = _flag(closest, deps.cfg)
-    get_stream_writer()(NOT_FOUND)
+    answer = NOT_FOUND
+    if state["missing"]:
+        names = ", ".join(f'"{m}"' for m in state["missing"])
+        answer += f" No document matches {names}."
+    get_stream_writer()(answer)
+    data: dict[str, Any] = {"closest": [s.label for s in closest]}
+    if state["missing"]:
+        data["missing"] = state["missing"]
     return {
-        "answer": NOT_FOUND,
+        "answer": answer,
         "abstained": True,
         "sources": closest,
-        "trace": [_event("not_found", start, {"closest": [s.label for s in closest]})],
+        "trace": [_event("not_found", start, data)],
     }
 
 
@@ -354,6 +510,25 @@ def groundedness(state: AgentState, deps: Deps) -> Update:
 
 
 # --- routing -------------------------------------------------------------------------------
+
+
+def _route(p: Plan, missing: tuple[str, ...]) -> str:
+    """The node a plan leads to."""
+    if p.clarify:
+        return "human"
+    if p.task == "chat":
+        return "direct"
+    if p.task == "lookup" or (p.task == "open" and not p.documents and not missing):
+        return "analyze"  # the corrective graph, unchanged
+    if p.task == "transform":
+        return "respond"
+    if missing:
+        return "not_found"
+    return "recipe"
+
+
+def after_plan(state: AgentState) -> str:
+    return state["route"]
 
 
 def after_analyze(state: AgentState) -> Literal["retrieve", "direct"]:
@@ -445,6 +620,39 @@ def _stream(llm: LLM, messages: list[Message]) -> str:
         parts.append(token)
         write(token)
     return "".join(parts).strip()
+
+
+def _gateway(deps: Deps) -> Gateway:
+    """A gateway for one recipe: its step budget fits the longest recipe."""
+    if deps.cards is None or deps.catalog is None:
+        raise ValueError("tools need the card store and the catalog")
+    agent = deps.cfg.agent
+    steps = max(agent.max_steps, recipes.MAX_CALLS)
+    cfg = deps.cfg.model_copy(update={"agent": agent.model_copy(update={"max_steps": steps})})
+    ctx = ToolContext(
+        cfg,
+        deps.llm,
+        deps.embedder,
+        deps.index,
+        deps.registry,
+        deps.reranker,
+        deps.cards,
+        deps.catalog,
+    )
+    return Gateway(ctx)
+
+
+def _tool_event(result: ToolResult) -> TraceEvent:
+    data = {
+        "name": result.call.name,
+        "arguments": result.call.arguments,
+        "ok": result.ok,
+        "error": result.error,
+        "chars": len(result.content),
+        "sources": len(result.sources),
+        "warnings": list(result.warnings),
+    }
+    return TraceEvent("tool", result.duration_ms, data)
 
 
 def _flag(sources: list[Source], cfg: Config) -> list[Source]:

@@ -20,7 +20,8 @@ JSON-serializable and uses these keys (a node may add more; consumers must toler
 | `groundedness`   | `unsupported` list of {`claim`, `cited`, `reason`}                 |
 | `direct`         | `reason` str (answered without retrieval)                          |
 | `plan`           | `task` str, `mentions` list[str], `documents` list[str] (file ids), |
-|                  | `language` str, `steps` list[str], `clarify` str or None           |
+|                  | `language` str, `steps` list[str], `clarify` str or None,          |
+|                  | `missing` list[str] (mentions that matched no document)            |
 | `recipe`         | `name` str (the task), `documents` list[str] (file ids)            |
 | `reason`         | `step` int (1-based), `tool_calls` list[str] (names),              |
 |                  | `thinking_chars` int                                               |
@@ -101,6 +102,8 @@ class Plan:
     language: str = "en"  # ISO 639-1 to answer in
     steps: tuple[str, ...] = ()  # 1-3 short steps, shown to the user while it works
     clarify: str | None = None  # ask the user this instead of acting
+    focus: str | None = None  # a topic the request narrows to ("grading", "termination")
+    fields: tuple[str, ...] = ()  # extract: what to pull out of each document
 
 
 @dataclass(frozen=True)
@@ -150,6 +153,14 @@ class AgentResult:
     @property
     def cited(self) -> list[Source]:
         return cited_sources(self.answer, self.sources)
+
+    @property
+    def task(self) -> str:
+        """The route the run took: the planner's task, or "lookup" when no planner ran."""
+        for event in self.trace:
+            if event.node == "plan":
+                return str(event.data.get("task", "lookup"))
+        return "lookup"
 
     def node_ms(self, node: str) -> float:
         """Total time spent in `node` across the run."""

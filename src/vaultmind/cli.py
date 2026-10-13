@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from vaultmind.agent.baseline import Source
     from vaultmind.agent.types import AgentResult
     from vaultmind.core.providers import LLM, Embedder, Message, Reranker
+    from vaultmind.store.cards import CardStore
     from vaultmind.store.index import ChunkIndex
     from vaultmind.store.registry import Registry
     from vaultmind.store.traces import StoredRun
@@ -253,6 +254,7 @@ def stream_agent(
     registry: Registry,
     reranker: Reranker | None,
     history: Sequence[Message] = (),
+    cards: CardStore | None = None,
 ) -> Iterator[str | AgentResult]:
     """`agent.graph.stream_agent`, imported on first use to keep CLI startup fast."""
     from vaultmind.agent.graph import stream_agent as run
@@ -266,6 +268,7 @@ def stream_agent(
         registry=registry,
         reranker=reranker,
         history=history,
+        cards=cards,
     )
 
 
@@ -293,8 +296,14 @@ def ask(
             typer.echo("(no trace: agent.loop is off)")
         return
 
+    from vaultmind.store.cards import CardStore
+
     result: AgentResult | None = None
-    with _store(cfg) as (index, registry), _ollama_errors():
+    with (
+        _store(cfg) as (index, registry),
+        _ollama_errors(),
+        closing(CardStore(_db_path(cfg))) as cards,
+    ):
         if index.count() == 0:
             typer.secho("[FAIL] The index is empty. Run: vaultmind ingest", fg="red")
             raise typer.Exit(1)
@@ -306,6 +315,7 @@ def ask(
             index=index,
             registry=registry,
             reranker=_reranker(cfg),
+            cards=cards,
         )
         for event in events:
             if isinstance(event, AgentResult):
@@ -567,6 +577,7 @@ def eval_run(
         run_config,
         save_report,
     )
+    from vaultmind.store.cards import CardStore
 
     paths: list[Path | None] = list(config_paths) if config_paths else [None]
     configs = {(path.stem if path else "default"): load_config(path) for path in paths}
@@ -585,7 +596,11 @@ def eval_run(
     runs: list[list[RunReport]] = []  # one entry per (config, dataset): its repeats
     rerankers: dict[str, Reranker | None] = {}  # loaded once per model, shared across configs
     for config_name, cfg in configs.items():
-        with _store(cfg) as (index, registry), _ollama_errors():
+        with (
+            _store(cfg) as (index, registry),
+            _ollama_errors(),
+            closing(CardStore(_db_path(cfg))) as cards,
+        ):
             if index.count() == 0:
                 typer.secho(
                     f"[FAIL] {config_name}: the index is empty. Run: vaultmind ingest", fg="red"
@@ -621,6 +636,7 @@ def eval_run(
                         reranker=reranker,
                         judge_llm=judge_llm,
                         on_item=progress,
+                        cards=cards,
                     )
                     save_report(report, run_dir, repeat=r if repeat > 1 else None)
                     repeats.append(report)
@@ -628,6 +644,115 @@ def eval_run(
 
     typer.echo()
     typer.echo(format_repeat_table(runs))
+    if repeat > 1:
+        typer.echo(f"Each value: mean (min-max) over {repeat} repeats.")
+    typer.echo()
+    typer.echo(f"Raw results: {run_dir}")
+
+
+@eval_app.command("tasks")
+def eval_tasks(
+    config_paths: Annotated[
+        list[Path] | None,
+        typer.Option("--config", "-c", help="Config to score; repeat to compare several."),
+    ] = None,
+    dataset: Annotated[
+        str, typer.Option("--dataset", "-d", help="Task set name or .jsonl path.")
+    ] = "personal_tasks",
+    judge: Annotated[
+        bool, typer.Option("--judge/--no-judge", help="Grade answers with the key-facts judge.")
+    ] = True,
+    limit: Annotated[
+        int | None, typer.Option(min=1, help="Only the first N items (quick runs).")
+    ] = None,
+    only: Annotated[
+        list[str] | None, typer.Option("--task", help="Only items with this task label.")
+    ] = None,
+    out_dir: Annotated[Path, typer.Option(help="Where raw results go.")] = Path("eval/results"),
+    repeat: Annotated[
+        int, typer.Option(min=1, help="Run each config N times; report mean (min-max).")
+    ] = 1,
+) -> None:
+    """Score the document agent (planner + recipes) on a task set: router accuracy, task
+    success with the key-facts judge, latency per task type."""
+    from datetime import datetime
+
+    from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM
+    from vaultmind.eval.runner import format_repeat_table
+    from vaultmind.eval.task_runner import (
+        TASK_METRIC_NAMES,
+        TaskReport,
+        TaskResult,
+        run_tasks,
+        save_task_report,
+    )
+    from vaultmind.eval.tasks import load_tasks
+    from vaultmind.store.cards import CardStore
+
+    paths: list[Path | None] = list(config_paths) if config_paths else [None]
+    configs = {(path.stem if path else "default"): load_config(path) for path in paths}
+    if len(configs) != len(paths):
+        typer.secho("[FAIL] Config file names must be unique (they name the columns).", fg="red")
+        raise typer.Exit(1)
+    try:
+        items = load_tasks(_dataset_path(dataset))
+    except (ValueError, OSError) as exc:
+        typer.secho(f"[FAIL] {exc}", fg="red")
+        raise typer.Exit(1) from exc
+    if only:
+        items = [it for it in items if it.task in only]
+    items = items[:limit] if limit else items
+    if not items:
+        typer.secho("[FAIL] No task items to run.", fg="red")
+        raise typer.Exit(1)
+
+    name = Path(dataset).stem
+    run_dir = out_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+    judge_llm = OllamaLLM.from_config(next(iter(configs.values()))) if judge else None
+    runs: list[list[TaskReport]] = []
+
+    def progress(result: TaskResult, total: int = len(items)) -> None:
+        route = result.task if result.task == result.gold_task else f"{result.task}!"
+        mark = "-" if result.success is None else ("ok" if result.success else "FAIL")
+        typer.echo(f"  [{result.id}] {route} {mark} {result.total_ms / 1000:.1f}s")
+
+    for config_name, cfg in configs.items():
+        with (
+            _store(cfg) as (index, registry),
+            _ollama_errors(),
+            closing(CardStore(_db_path(cfg))) as cards,
+        ):
+            if index.count() == 0:
+                typer.secho(
+                    f"[FAIL] {config_name}: the index is empty. Run: vaultmind ingest", fg="red"
+                )
+                raise typer.Exit(1)
+            llm, embedder = OllamaLLM.from_config(cfg), OllamaEmbedder.from_config(cfg)
+            reranker = _reranker(cfg)
+            repeats: list[TaskReport] = []
+            for r in range(1, repeat + 1):
+                of = f" (repeat {r}/{repeat})" if repeat > 1 else ""
+                typer.echo(f"{config_name} / {name}: {len(items)} items{of}")
+                report = run_tasks(
+                    cfg,
+                    items,
+                    config_name=config_name,
+                    dataset_name=name,
+                    llm=llm,
+                    embedder=embedder,
+                    index=index,
+                    registry=registry,
+                    cards=cards,
+                    reranker=reranker,
+                    judge_llm=judge_llm,
+                    on_item=progress,
+                )
+                save_task_report(report, run_dir, repeat=r if repeat > 1 else None)
+                repeats.append(report)
+            runs.append(repeats)
+
+    typer.echo()
+    typer.echo(format_repeat_table(runs, TASK_METRIC_NAMES))
     if repeat > 1:
         typer.echo(f"Each value: mean (min-max) over {repeat} repeats.")
     typer.echo()

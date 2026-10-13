@@ -90,6 +90,8 @@ class Engine:
         paused = self.enricher.paused() if self.enricher is not None else nullcontext()
         with self._ask_lock, paused:
             result: AgentResult | None = None
+            earlier = self.chats.messages(chat_id)
+            previous = next((m for m in reversed(earlier) if m.role == "assistant"), None)
             events = stream_agent(
                 question,
                 self.cfg,
@@ -98,7 +100,9 @@ class Engine:
                 index=self.index,
                 registry=self.registry,
                 reranker=self.reranker,
-                history=self.chats.history(chat_id),
+                history=[{"role": m.role, "content": m.content} for m in earlier],
+                cards=self.cards,
+                previous_sources=previous.sources if previous is not None else (),
             )
             for event in events:
                 if isinstance(event, AgentResult):
