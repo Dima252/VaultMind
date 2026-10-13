@@ -1,5 +1,5 @@
 # As hybrid_rerank.yaml, but the LLM reads the matched child chunks, not their parent sections.
-# Same as the default config except for the threshold.
+# The default retrieval settings except for the threshold.
 retrieval:
   hybrid: true
   rerank: true

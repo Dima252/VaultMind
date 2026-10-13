@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from watchdog.events import DirCreatedEvent, FileCreatedEvent, FileMovedEvent
 
 from vaultmind.core.config import Config, PathsConfig
 from vaultmind.ingest.queue import IngestQueue
@@ -250,3 +251,18 @@ def test_with_real_queue(root: Path, tmp_path: Path) -> None:
         queue.stop()
         registry.close()
         index.close()
+
+
+def test_replayed_creation_of_root_and_known_files_is_ignored(root: Path, fake: FakeQueue) -> None:
+    """macOS FSEvents replays creations from just before the watch started."""
+    path = root / "old.md"
+    path.write_text("already indexed by the startup scan", encoding="utf-8")
+    w = VaultWatcher(root, cast(IngestQueue, fake), debounce_s=DEBOUNCE)
+    w._remember_existing()
+    w.handle(DirCreatedEvent(str(root)))
+    w.handle(FileCreatedEvent(str(path)))
+    settle()
+    assert fake.names("submit") == []
+    w.handle(FileMovedEvent(str(root / "draft.md"), str(path)))  # moved over it: always new
+    assert eventually(lambda: fake.names("submit") == ["old.md"])
+    w.stop()

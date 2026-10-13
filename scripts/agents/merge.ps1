@@ -28,7 +28,8 @@ foreach ($name in $Agents) {
 }
 
 Write-Host "`n[check] running the full suite on main"
-Invoke-Native 'uv sync'      { uv sync --quiet }
+# With the rerank extra: plain `uv sync` would uninstall torch from the main checkout.
+Invoke-Native 'uv sync'      { uv sync --extra rerank --quiet }
 Invoke-Native 'ruff format'  { uv run ruff format --check . }
 Invoke-Native 'ruff check'   { uv run ruff check . }
 Invoke-Native 'mypy'         { uv run mypy src tests }

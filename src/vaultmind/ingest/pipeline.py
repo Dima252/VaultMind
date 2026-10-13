@@ -106,7 +106,7 @@ def ingest_path(
         (summary.added if existing is None else summary.updated).append(file)
 
     for record in registry.all():
-        if record.id in seen or record.path.exists() or not _is_within(record.path, root):
+        if record.id in seen or record.path.exists() or not record.path.is_relative_to(root):
             continue
         index.delete_file(record.id)
         registry.remove(record.id)
@@ -126,7 +126,3 @@ def forget_file(path: Path, *, index: ChunkIndex, registry: Registry) -> bool:
     registry.remove(file_id)
     index.refresh_fts()
     return True
-
-
-def _is_within(path: Path, root: Path) -> bool:
-    return path == root or path.is_relative_to(root)

@@ -1,0 +1,3 @@
+# The default config with the planner off: every message is a lookup (the M2 regression check).
+agent:
+  router: false

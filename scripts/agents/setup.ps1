@@ -24,6 +24,7 @@ foreach ($name in $Agents) {
     Write-Host "[new ] $name -> $wt (branch agent/$name)"
     Invoke-Native "git worktree add ($name)" { git worktree add -b "agent/$name" $wt HEAD }
     Push-Location $wt
+    # Plain sync (no torch); each agent runs `uv sync --extra rerank` itself (rule 0 in prompts/_rules.md).
     try { Invoke-Native "uv sync ($name)" { uv sync --quiet } } finally { Pop-Location }
 }
 

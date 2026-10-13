@@ -1,4 +1,4 @@
-"""The Phase 4 contract pieces that exist before the agents implement them."""
+"""Graph entry-point guarantees: run_agent returns the final result; LangSmith tracing is off."""
 
 from __future__ import annotations
 

@@ -1,4 +1,9 @@
-# Phase 4 first default: loop with 2 query variants and up to 2 rewrites.
+# Phase 4 first default: loop with 2 query variants and up to 2 rewrites. The other loop_*
+# configs are this one with one part changed. Switches that came after Phase 4 (contradiction
+# check on by default, small talk, the router) are pinned off so the results stay comparable.
 agent:
   query_variants: 2
   rewrite: true
+  detect_contradictions: false
+  smalltalk: false
+  router: false

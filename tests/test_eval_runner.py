@@ -16,6 +16,7 @@ from vaultmind.core.config import (
     ModelsConfig,
     PathsConfig,
     RetrievalConfig,
+    load_config,
 )
 from vaultmind.core.models import ChildChunk, FileRecord, ParentSection
 from vaultmind.eval import runner
@@ -34,7 +35,6 @@ from vaultmind.eval.runner import (
     run_config,
     save_report,
 )
-from vaultmind.eval.tasks import TaskItem, load_tasks
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
 
@@ -392,6 +392,25 @@ def test_compute_metrics_length_mismatch() -> None:
         compute_metrics([_item()], [])
 
 
+# --- ablation configs ---------------------------------------------------------------------
+
+CONFIGS_DIR = Path(__file__).resolve().parent.parent / "eval" / "configs"
+
+
+@pytest.mark.parametrize("path", sorted(CONFIGS_DIR.glob("*.yaml")), ids=lambda p: p.stem)
+def test_ablation_config_is_valid_and_not_the_default(path: Path) -> None:
+    assert load_config(path) != Config()  # load_config rejects unknown keys
+
+
+def test_loop_ablations_change_one_switch_of_the_phase_4_default() -> None:
+    base = load_config(CONFIGS_DIR / "loop_variants_rewrite.yaml").agent.model_dump()
+    ablations = [p for p in CONFIGS_DIR.glob("loop_*.yaml") if p.stem != "loop_variants_rewrite"]
+    assert ablations
+    for path in ablations:
+        agent = load_config(path).agent.model_dump()
+        assert len({k for k in base if agent[k] != base[k]}) == 1, path.stem
+
+
 # --- check_compatible -------------------------------------------------------------
 
 
@@ -509,21 +528,6 @@ def test_format_table_non_ascii_names_and_empty() -> None:
     assert table.isascii()
     with pytest.raises(ValueError):
         format_table([])
-
-
-# --- task set example ---------------------------------------------------------------------
-
-TASKS_EXAMPLE = Path(__file__).resolve().parent.parent / "eval" / "datasets" / "tasks_example.jsonl"
-
-
-def test_tasks_example_loads_and_covers_every_field() -> None:
-    items = load_tasks(TASKS_EXAMPLE)
-    assert len(items) == 8
-    for name in TaskItem.model_fields:
-        assert any(name in item.model_fields_set for item in items), name
-    assert {item.task for item in items} >= {"list", "summarize", "compare", "extract", "open"}
-    assert any(item.clarify for item in items) and any(item.forbidden for item in items)
-    assert any(item.language == "he" for item in items)
 
 
 # --- repeated runs -------------------------------------------------------------------------

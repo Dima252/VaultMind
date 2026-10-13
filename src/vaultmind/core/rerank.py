@@ -16,6 +16,7 @@ from vaultmind.core.config import Config
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 MAX_LENGTH = 512  # query + one child chunk (~256 tokens) fits with room to spare
+BATCH_SIZE = 32
 
 
 class RerankerUnavailableError(Exception):
@@ -23,7 +24,7 @@ class RerankerUnavailableError(Exception):
 
 
 class CrossEncoderReranker:
-    def __init__(self, model_name: str, *, batch_size: int = 32) -> None:
+    def __init__(self, model_name: str) -> None:
         # Read when huggingface_hub is first imported: never touch the network while answering,
         # and no progress bar when loading weights.
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -50,7 +51,6 @@ class CrossEncoderReranker:
                 f"Reranker {model_name!r} is not downloaded. Run: vaultmind pull-reranker"
             ) from exc
         self.model_name = model_name
-        self._batch_size = batch_size
 
     @classmethod
     def from_config(cls, cfg: Config) -> CrossEncoderReranker:
@@ -61,7 +61,7 @@ class CrossEncoderReranker:
         if not passages:
             return []
         scores = self._model.predict(
-            [(query, p) for p in passages], batch_size=self._batch_size, show_progress_bar=False
+            [(query, p) for p in passages], batch_size=BATCH_SIZE, show_progress_bar=False
         )
         return [float(s) for s in scores]
 

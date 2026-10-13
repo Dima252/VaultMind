@@ -330,7 +330,7 @@ def place_upload(tmp: Path, name: str, vault: Path) -> Path:
 
 
 def open_with_os(path: Path) -> None:
-    """Open a file in the OS default app."""
+    """Open a file in the OS default app, without waiting for it."""
     if sys.platform == "win32":
         os.startfile(path)
     else:
@@ -376,4 +376,4 @@ def _relative_folder(path: Path, vault: Path) -> str | None:
 
 def _is_within(path: Path, vault: Path) -> bool:
     parent, root = Path(os.path.normcase(path.parent)), Path(os.path.normcase(vault))
-    return parent == root or parent.is_relative_to(root)
+    return parent.is_relative_to(root)

@@ -15,7 +15,7 @@ from vaultmind.agent.types import AgentResult, Contradiction, TraceEvent, Unsupp
 from vaultmind.core import ollama
 from vaultmind.core.config import load_config
 from vaultmind.core.models import ChildChunk, FileRecord, ParentSection
-from vaultmind.eval import runner
+from vaultmind.eval import runner, task_runner
 from vaultmind.store.index import ChunkIndex
 from vaultmind.store.registry import Registry
 from vaultmind.store.traces import TraceStore
@@ -403,6 +403,48 @@ def test_eval_run_rejects_repeat_zero(config_path: Path, tmp_path: Path, llm: Fa
     )
     out = _eval_run(config_path, dataset, tmp_path / "results", "--repeat", "0")
     assert out.exit_code != 0
+
+
+# --- eval tasks -------------------------------------------------------------------------------
+
+
+def _task_set(tmp_path: Path) -> Path:
+    path = tmp_path / "mine_tasks.jsonl"
+    rows = [
+        {"id": "summarize-01", "request": "Summarize the manual", "task": "summarize",
+         "key_facts": ["install with uv"]},
+        {"id": "list-01", "request": "What documents do I have?", "task": "list",
+         "key_facts": ["the manual"]},
+    ]  # fmt: skip
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return path
+
+
+def test_eval_tasks_progress_table_and_file(
+    config_path: Path, tmp_path: Path, llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_agent(question: str, *args: Any, **kwargs: Any) -> AgentResult:
+        assert kwargs["cards"] is not None
+        plan = TraceEvent("plan", 1.0, {"task": "summarize"})
+        return _answer(question=question, sources=[], trace=[plan])
+
+    monkeypatch.setattr(task_runner, "run_agent", fake_agent)
+    out_dir = tmp_path / "results"
+    args = ["-c", str(config_path), "-d", str(_task_set(tmp_path)), "--out-dir", str(out_dir)]
+    out = _invoke("eval", "tasks", *args, "--no-judge")
+    assert out.exit_code == 0, out.output
+    lines = out.output.splitlines()
+    assert "config-loop / mine_tasks: 2 items" in lines
+    assert any(line.startswith("  [summarize-01] summarize - ") for line in lines)
+    assert any(line.startswith("  [list-01] summarize! - ") for line in lines)  # misrouted
+    accuracy = next(line for line in lines if line.startswith("router_accuracy"))
+    assert accuracy.split()[1:] == ["0.500"]
+    [run_dir] = list(out_dir.iterdir())
+    assert [p.name for p in run_dir.iterdir()] == ["config-loop__mine_tasks.jsonl"]
+
+    none_left = _invoke("eval", "tasks", *args, "--no-judge", "--task", "compare")
+    assert none_left.exit_code == 1
+    assert "No task items to run" in none_left.output
 
 
 def test_enrich_writes_missing_cards_once(

@@ -94,7 +94,7 @@ class SectionSummary:
 
 @dataclass(frozen=True)
 class DocCard:
-    """What a document is about as a whole, written once at ingest by the LLM (Phase 5.5).
+    """What a document is about as a whole, written once at ingest by the LLM.
 
     Keyed by (sha256, model, prompt_version): identical content shares a card, and a new
     model or prompt makes a new one. Text fields are in the document's own language.

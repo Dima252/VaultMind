@@ -55,7 +55,7 @@ def needs_restart(old: Config, new: Config) -> list[str]:
 
 def needs_reindex(old: Config, new: Config) -> bool:
     """True when the embedder or chunking changed: the index must be rebuilt."""
-    return any(k == key or k.startswith(key) for k in _changed(old, new) for key in _REINDEX_KEYS)
+    return any(k.startswith(_REINDEX_KEYS) for k in _changed(old, new))
 
 
 def _diff(new: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:

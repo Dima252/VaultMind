@@ -1,1 +1,1 @@
-"""Storage: LanceDB chunk index and SQLite app state (Phase 1)."""
+"""Storage: the LanceDB chunk index and the SQLite app database (files, runs, chats, cards)."""

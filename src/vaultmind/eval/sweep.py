@@ -40,12 +40,12 @@ def sweep(
         if item.question != result.question:
             raise ValueError(f"results don't match the dataset at item {n}")
 
+    answerable = [it.answerable for it in items]
+    with_evidence = [i for i, it in enumerate(items) if it.evidence]
     rows: list[SweepRow] = []
     for t in thresholds:
         kept = [[s.text for s in r.retrieved if s.score >= t] for r in results]
         abstained = [r.abstained or not k for r, k in zip(results, kept, strict=True)]
-        answerable = [it.answerable for it in items]
-        with_evidence = [i for i, it in enumerate(items) if it.evidence]
         rows.append(
             SweepRow(
                 threshold=t,

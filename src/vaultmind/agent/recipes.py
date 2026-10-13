@@ -1,4 +1,4 @@
-"""Recipes: fixed tool sequences for the common document tasks (Phase 5.5, M2).
+"""Recipes: fixed tool sequences for the common document tasks (Phase 5.5).
 
 list -> the catalog; summarize -> each document's summary; compare -> both summaries, plus a
 scoped search when the request has a focus; extract -> one extraction table; generate and
@@ -93,7 +93,6 @@ Call = Callable[[ToolCall], ToolResult]
 
 
 def run(
-    task: str,
     plan: Plan,
     question: str,
     *,
@@ -101,9 +100,10 @@ def run(
     catalog: Catalog,
     call: Call | None = None,
 ) -> Gathered:
-    """Gather what `task` needs. `call` runs one tool call (default: `gateway.call`); the
-    graph passes one that also records a trace event."""
+    """Gather what the plan's task needs. `call` runs one tool call (default: `gateway.call`);
+    the graph passes one that also records a trace event."""
     do = call or gateway.call
+    task = plan.task
     out = Gathered()
     docs = list(plan.documents)
 
@@ -132,8 +132,11 @@ def run(
     docs = docs[:MAX_DOCUMENTS]
     focus = plan.focus or ""
     for doc in docs:
-        use("summarize", doc=doc, **({"focus": focus} if focus and task == "summarize" else {}))
-        if task in ("compare", "generate", "open") and (focus or task == "open"):
+        if task == "summarize" and focus:
+            use("summarize", doc=doc, focus=focus)
+        else:
+            use("summarize", doc=doc)
+        if task == "open" or (focus and task in ("compare", "generate")):
             use("search", query=focus or question, doc=doc)
     out.documents = docs
     return out
@@ -151,7 +154,6 @@ def document_list(catalog: Catalog, language: str) -> str:
 
 
 def respond_messages(
-    task: str,
     plan: Plan,
     question: str,
     gathered: Gathered,
@@ -160,7 +162,7 @@ def respond_messages(
 ) -> list[Message]:
     """The one call that writes the answer from what the recipe read."""
     plural = len(gathered.documents) > 1
-    instruction = INSTRUCTIONS.get(task, INSTRUCTIONS["open"]).format(
+    instruction = INSTRUCTIONS.get(plan.task, INSTRUCTIONS["open"]).format(
         s="s" if plural else "",
         it_is="each one is" if plural else "it is",
         focus=f", focusing on {plan.focus}" if plan.focus else "",

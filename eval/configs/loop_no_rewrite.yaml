@@ -1,3 +1,7 @@
-# Loop with the rewrite step off.
+# loop_variants_rewrite.yaml with the rewrite step off.
 agent:
+  query_variants: 2
   rewrite: false
+  detect_contradictions: false
+  smalltalk: false
+  router: false

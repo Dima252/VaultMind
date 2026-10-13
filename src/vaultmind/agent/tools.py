@@ -28,7 +28,7 @@ from vaultmind.agent.guard import neutralize
 from vaultmind.agent.retrieval import candidates, rerank
 from vaultmind.agent.types import ToolError
 from vaultmind.core.config import Config
-from vaultmind.core.models import ParentSection, SearchHit
+from vaultmind.core.models import ParentSection, SearchHit, SectionSummary
 from vaultmind.core.providers import LLM, Embedder, Message, Reranker, ToolSpec
 from vaultmind.store.cards import CardStore
 from vaultmind.store.index import ChunkIndex
@@ -214,6 +214,7 @@ def _deref(prop: dict[str, Any], defs: dict[str, Any]) -> dict[str, Any]:
 
 # --- helpers ----------------------------------------------------------------------------
 
+CHARS_PER_TOKEN = 4  # the observation budget's estimate (`agent.observation_tokens`)
 _PAGES = re.compile(r"\s*(\d+)\s*(?:[-\u2013]\s*(\d+)\s*)?")  # 3-5, also with an en dash
 SCOPE_OVERFETCH = 10  # scoped search looks at this many times the usual candidates
 SCOPE_MAX_CANDIDATES = 200
@@ -233,9 +234,10 @@ def _data(text: str) -> str:
     return _OWN_TAGS.sub(lambda m: f"({m.group(1)}{m.group(2)})", neutralize(text))
 
 
-def _section_label(parent: ParentSection) -> str:
-    path = " > ".join(parent.section_path) or "(no heading)"
-    pages = _page_label(parent.page_start, parent.page_end)
+def _section_label(section: ParentSection | SectionSummary) -> str:
+    """'Grading > Exams, pp. 4-5'; '(no heading)' for text before the first heading."""
+    path = " > ".join(section.section_path) or "(no heading)"
+    pages = _page_label(section.page_start, section.page_end)
     return f"{path}, {pages}" if pages else path
 
 
@@ -277,26 +279,26 @@ def _ranges(numbers: Sequence[int]) -> str:
 
 
 def _hits(ctx: ToolContext, query: str, file_id: str | None) -> list[SearchHit]:
-    """Today's hybrid search + rerank, optionally kept to one file.
+    """The vault search (candidates, then rerank and threshold), optionally kept to one file.
 
     Scoped search over-fetches candidates from the whole index, keeps the file's, and reranks
-    those, so a file that isn't in the vault-wide top 20 still returns its passages. Without
-    a reranker (not loaded), hits keep their fused order.
+    those, so a file that isn't among the vault-wide candidates still returns its passages.
+    Without a reranker (not loaded), hits keep their fused order.
     """
     r = ctx.cfg.retrieval
-    use_rerank = r.rerank and ctx.reranker is not None
     wide = min(r.candidates * SCOPE_OVERFETCH, SCOPE_MAX_CANDIDATES) if file_id else r.candidates
     fetch = r.model_copy(update={"candidates": wide, "top_k": max(wide, r.top_k)})
     cfg = ctx.cfg.model_copy(update={"retrieval": fetch})
     hits = candidates(query, cfg, embedder=ctx.embedder, index=ctx.index)
     if file_id is not None:
         hits = [h for h in hits if h.chunk.file_id == file_id][: r.candidates]
-    if use_rerank and ctx.reranker is not None:
+    if r.rerank and ctx.reranker is not None:
         hits = [h for h in rerank(query, hits, ctx.reranker) if h.score >= r.rerank_threshold]
     return hits[: r.top_k]
 
 
-def _numbered(hits: Sequence[SearchHit], ctx: ToolContext) -> list[Source]:
+def _hit_sources(hits: Sequence[SearchHit], ctx: ToolContext) -> list[Source]:
+    """Hits as sources, unnumbered (`n` = 0) like every tool's."""
     return [
         replace(s, n=0) for s in to_sources(hits, ctx.cfg, index=ctx.index, registry=ctx.registry)
     ]
@@ -367,10 +369,7 @@ def _document_card(ctx: ToolContext, args: DocArgs) -> ToolOutput:
         lines.append("Key dates:\n" + "\n".join(f"- {d.text}: {d.what}" for d in card.dates))
     if card.sections:
         lines.append("Sections:")
-        for s in card.sections:
-            path = " > ".join(s.section_path) or "(no heading)"
-            pages = _page_label(s.page_start, s.page_end)
-            lines.append(f"- {path}{', ' + pages if pages else ''}: {s.summary}")
+        lines += [f"- {_section_label(s)}: {s.summary}" for s in card.sections]
     return ToolOutput("\n".join(lines))
 
 
@@ -396,7 +395,7 @@ def _read(ctx: ToolContext, args: ReadArgs) -> ToolOutput:
         note = f"\n({entry.name} has no page numbers, so this is from the start.)"
         args = args.model_copy(update={"pages": None})
     chosen = _select(entry, parents, args)
-    budget = ctx.cfg.agent.observation_tokens * 4 - READ_FOOTER_CHARS
+    budget = ctx.cfg.agent.observation_tokens * CHARS_PER_TOKEN - READ_FOOTER_CHARS
     parts: list[str] = []
     read: list[int] = []
     used = 0
@@ -456,7 +455,7 @@ def _search(ctx: ToolContext, args: SearchArgs) -> ToolOutput:
     where = f" in {entry.name}" if entry else ""
     if not hits:
         return ToolOutput(f"No passages matched {args.query!r}{where}.")
-    sources = _numbered(hits, ctx)
+    sources = _hit_sources(hits, ctx)
     lines = [f"{len(sources)} passages for {args.query!r}{where}, best first:"]
     for i, s in enumerate(sources, start=1):
         lines.append(f"\nResult {i} ({s.label}; relevance {s.score:.2f})\n{s.text.strip()}")
@@ -505,10 +504,7 @@ def _card_summary(ctx: ToolContext, entry: CatalogEntry) -> ToolOutput:
     lines = [f"Summary of {entry.name} (from its document card):", card.summary.strip()]
     if card.sections:
         lines.append("\nBy section:")
-        for s in card.sections:
-            path = " > ".join(s.section_path) or "(no heading)"
-            pages = _page_label(s.page_start, s.page_end)
-            lines.append(f"- {s.summary} ({path}{', ' + pages if pages else ''})")
+        lines += [f"- {s.summary} ({_section_label(s)})" for s in card.sections]
     wanted = {s.parent_id for s in card.sections}
     parents = [p for p in ctx.index.parents_for_file(entry.file.id) if p.id in wanted]
     return ToolOutput("\n".join(lines), tuple(_source(entry, p) for p in parents))
@@ -523,7 +519,7 @@ def _map_reduce(ctx: ToolContext, entry: CatalogEntry, focus: str) -> ToolOutput
     batches = _batches([_section_block(p, budget) for p in parents], budget)
     about = f", focusing on {focus}" if focus else ""
     if len(batches) == 1:
-        summary = _map(ctx, entry, batches[0], "all", "8-12", about)
+        summary = _map(ctx, entry, batches[0], "the whole text", "8-12", about)
     else:
         partials = [
             _map(ctx, entry, batch, f"part {i} of {len(batches)}", "3-8", about)
@@ -565,7 +561,6 @@ def _map(
     bullets: str,
     about: str,
 ) -> str:
-    what = "the whole text" if what == "all" else what
     system = MAP_PROMPT.format(what=what, name=entry.name, bullets=bullets, focus=about)
     messages: list[Message] = [
         {"role": "system", "content": system},
@@ -587,9 +582,9 @@ def _extract(ctx: ToolContext, args: ExtractArgs) -> ToolOutput:
     sources: list[Source] = []
     for mention in args.docs:
         entry = ctx.catalog.resolve(mention)
-        found = _extract_one(ctx, entry, args.fields)
-        rows.append((entry.name, found[0]))
-        sources += [s for s in found[1] if s not in sources]
+        values, read = _extract_one(ctx, entry, args.fields)
+        rows.append((entry.name, values))
+        sources += [s for s in read if s not in sources]
     header = ["Document", *args.fields]
     lines = [_row(header), _row(["---"] * len(header))]
     lines += [_row([name, *(values[f] for f in args.fields)]) for name, values in rows]
@@ -605,7 +600,7 @@ def _extract_one(
             hits.setdefault(hit.chunk.id, hit)
     if not hits:
         return {f: "not found" for f in fields}, []
-    sources = _numbered(list(hits.values()), ctx)
+    sources = _hit_sources(list(hits.values()), ctx)
     passages = "\n\n".join(
         f'<passage label="{_data(_page_section(s))}">\n{_data(s.text.strip())}\n</passage>'
         for s in sources
@@ -772,10 +767,11 @@ def parse_date(text: str) -> date:
     """ISO dates and the common day-first forms ("15.3.2026", "15/03/2026"). Raises
     `ToolError`."""
     cleaned = " ".join(text.strip().rstrip(".").split())
-    try:
-        return date.fromisoformat(cleaned[:10]) if len(cleaned) >= 10 else _strptime(cleaned)
-    except ValueError:
-        pass
+    if len(cleaned) >= 10:
+        try:
+            return date.fromisoformat(cleaned[:10])
+        except ValueError:
+            pass
     try:
         return _strptime(cleaned)
     except ValueError:

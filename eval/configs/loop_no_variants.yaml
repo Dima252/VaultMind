@@ -1,3 +1,8 @@
-# Loop without query variants (analyze skipped when there is no chat history).
+# loop_variants_rewrite.yaml without query variants (analyze skipped when there is no chat
+# history).
 agent:
   query_variants: 0
+  rewrite: true
+  detect_contradictions: false
+  smalltalk: false
+  router: false

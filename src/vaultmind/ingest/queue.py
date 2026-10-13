@@ -243,11 +243,11 @@ class IngestQueue:
             self._emit(JobEvent(path, "removed"))
             return
         root = _norm(path)
-        self._drop([r.path for r in self._registry.all() if _is_within(_norm(r.path), root)])
+        self._drop([r.path for r in self._registry.all() if _norm(r.path).is_relative_to(root)])
 
     def _prune(self, vault: Path) -> None:
         root = _norm(vault)
-        self._drop([r.path for r in self._registry.all() if not _is_within(_norm(r.path), root)])
+        self._drop([r.path for r in self._registry.all() if not _norm(r.path).is_relative_to(root)])
 
     def _drop(self, files: list[Path]) -> None:
         """Forget several files with one FTS rebuild."""
@@ -275,9 +275,5 @@ def _describe(exc: Exception) -> str:
 
 
 def _norm(path: Path) -> Path:
-    """Resolved and case-folded the way `file_id_for` does, for prefix comparisons."""
+    """Resolved (and case-folded on Windows), for prefix comparisons."""
     return Path(os.path.normcase(str(path.resolve())))
-
-
-def _is_within(path: Path, root: Path) -> bool:
-    return path == root or path.is_relative_to(root)

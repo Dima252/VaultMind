@@ -4,24 +4,31 @@ Shared contract between the graph (`agent/graph.py`), the safety checks (`agent/
 the tools and gateway (`agent/tools.py`, `agent/gateway.py`), the trace store
 (`store/traces.py`), the eval runner and the CLI. Change it deliberately.
 
-Trace events: every graph node appends one `TraceEvent` per execution, in order. `data` is
-JSON-serializable and uses these keys (a node may add more; consumers must tolerate extras):
+Trace events: every graph node appends one `TraceEvent` per execution, in order (the recipe
+node also appends one `tool` event per tool call, before its own). `data` is JSON-serializable
+and uses these keys (a node may add more; consumers must tolerate extras):
 
 | node             | data keys                                                          |
 |------------------|--------------------------------------------------------------------|
-| `analyze`        | `standalone_query` str, `variants` list[str], `needs_retrieval` bool |
+| `analyze`        | `standalone_query` str, `variants` list[str], `needs_retrieval` bool, |
+|                  | `skipped` bool (only when no LLM call was needed)                  |
 | `retrieve`       | `queries` list[str], `candidates` int                              |
 | `grade`          | `threshold` float or None, `passed` int,                           |
-|                  | `scores` list of {`label` str, `score` float, `passed` bool}        |
-| `rewrite`        | `attempt` int (1-based), `query` str                               |
+|                  | `scores` list of {`label` str, `score` float, `passed` bool},      |
+|                  | `flagged` list of {`label` str, `warnings` list[str]}              |
+| `rewrite`        | `attempt` int (1-based), `query` str, `repeated` bool (only if so) |
 | `contradictions` | `found` list of {`claim_a`, `source_a`, `claim_b`, `source_b`}     |
 | `generate`       | `sources` list[int] (numbers shown), `abstained` bool              |
-| `not_found`      | `closest` list[str] (source labels)                                |
+| `not_found`      | `closest` list[str] (source labels), `missing` list[str] (only     |
+|                  | when the planner named documents that aren't there)                |
 | `groundedness`   | `unsupported` list of {`claim`, `cited`, `reason`}                 |
-| `direct`         | `reason` str (answered without retrieval)                          |
+| `direct`         | `reason` str (answered without retrieval), `closest` list[str]     |
+|                  | (only when it searched and abstained)                              |
 | `plan`           | `task` str, `mentions` list[str], `documents` list[str] (file ids), |
 |                  | `language` str, `steps` list[str], `clarify` str or None,          |
-|                  | `missing` list[str] (mentions that matched no document)            |
+|                  | `missing` list[str] (mentions that matched no document),           |
+|                  | `route` str (the node it leads to); `focus` str and `fields`       |
+|                  | list[str] only when set                                            |
 | `recipe`         | `name` str (the task), `documents` list[str] (file ids)            |
 | `reason`         | `step` int (1-based), `tool_calls` list[str] (names),              |
 |                  | `thinking_chars` int                                               |

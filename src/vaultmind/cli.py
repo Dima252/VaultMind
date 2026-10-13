@@ -38,6 +38,10 @@ def _main() -> None:
             reconfigure(errors="replace")
 
 
+def _db_path(cfg: Config) -> Path:
+    return cfg.paths.data_dir / "vaultmind.sqlite"
+
+
 @contextmanager
 def _store(cfg: Config) -> Iterator[tuple[ChunkIndex, Registry]]:
     """Open the index and registry under `paths.data_dir`, with friendly errors."""
@@ -49,12 +53,20 @@ def _store(cfg: Config) -> Iterator[tuple[ChunkIndex, Registry]]:
     except EmbedderMismatchError as exc:
         typer.secho(f"[FAIL] {exc}", fg="red")
         raise typer.Exit(1) from exc
-    registry = Registry(cfg.paths.data_dir / "vaultmind.sqlite")
+    registry = Registry(_db_path(cfg))
     try:
         yield index, registry
     finally:
         registry.close()
         index.close()
+
+
+def _require_index(index: ChunkIndex, config_name: str = "") -> None:
+    """Exit with a hint when nothing has been ingested yet."""
+    if index.count() == 0:
+        what = f"{config_name}: the" if config_name else "The"
+        typer.secho(f"[FAIL] {what} index is empty. Run: vaultmind ingest", fg="red")
+        raise typer.Exit(1)
 
 
 @contextmanager
@@ -272,10 +284,6 @@ def stream_agent(
     )
 
 
-def _db_path(cfg: Config) -> Path:
-    return cfg.paths.data_dir / "vaultmind.sqlite"
-
-
 @app.command()
 def ask(
     question: Annotated[str, typer.Argument(help="Your question.")],
@@ -304,9 +312,7 @@ def ask(
         _ollama_errors(),
         closing(CardStore(_db_path(cfg))) as cards,
     ):
-        if index.count() == 0:
-            typer.secho("[FAIL] The index is empty. Run: vaultmind ingest", fg="red")
-            raise typer.Exit(1)
+        _require_index(index)
         events = stream_agent(
             question,
             cfg,
@@ -346,9 +352,7 @@ def _ask_linear(question: str, cfg: Config) -> None:
     from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM
 
     with _store(cfg) as (index, registry), _ollama_errors():
-        if index.count() == 0:
-            typer.secho("[FAIL] The index is empty. Run: vaultmind ingest", fg="red")
-            raise typer.Exit(1)
+        _require_index(index)
         sources, tokens = stream_answer(
             question,
             cfg,
@@ -539,12 +543,67 @@ def _dataset_path(name: str) -> Path:
     return Path(name) if name.endswith(".jsonl") else Path("eval/datasets") / f"{name}.jsonl"
 
 
+EvalConfigsOption = Annotated[
+    list[Path] | None,
+    typer.Option("--config", "-c", help="Config to score; repeat to compare several."),
+]
+LimitOption = Annotated[
+    int | None, typer.Option(min=1, help="Only the first N items (quick runs).")
+]
+OutDirOption = Annotated[Path, typer.Option(help="Where raw results go.")]
+
+
+def _eval_configs(config_paths: list[Path] | None) -> dict[str, Config]:
+    """The configs to score by column name: the file's stem, or "default" with no --config."""
+    paths: list[Path | None] = list(config_paths) if config_paths else [None]
+    configs = {(path.stem if path else "default"): load_config(path) for path in paths}
+    if len(configs) != len(paths):
+        typer.secho("[FAIL] Config file names must be unique (they name the columns).", fg="red")
+        raise typer.Exit(1)
+    return configs
+
+
+@contextmanager
+def _eval_stores(cfg: Config, config_name: str) -> Iterator[tuple[ChunkIndex, Registry, CardStore]]:
+    """The index, registry and cards one config is scored on; exits when its index is empty."""
+    from vaultmind.store.cards import CardStore
+
+    with (
+        _store(cfg) as (index, registry),
+        _ollama_errors(),
+        closing(CardStore(_db_path(cfg))) as cards,
+    ):
+        _require_index(index, config_name)
+        yield index, registry, cards
+
+
+def _shared_reranker(cfg: Config, loaded: dict[str, Reranker | None]) -> Reranker | None:
+    """`_reranker`, loaded once per model and shared across the configs of one eval command."""
+    if not cfg.retrieval.rerank:
+        return None
+    if cfg.models.reranker not in loaded:
+        loaded[cfg.models.reranker] = _reranker(cfg)
+    return loaded[cfg.models.reranker]
+
+
+def _run_dir(out_dir: Path) -> Path:
+    from datetime import datetime
+
+    return out_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _print_table(table: str, repeat: int, run_dir: Path) -> None:
+    typer.echo()
+    typer.echo(table)
+    if repeat > 1:
+        typer.echo(f"Each value: mean (min-max) over {repeat} repeats.")
+    typer.echo()
+    typer.echo(f"Raw results: {run_dir}")
+
+
 @eval_app.command("run")
 def eval_run(
-    config_paths: Annotated[
-        list[Path] | None,
-        typer.Option("--config", "-c", help="Config to score; repeat to compare several."),
-    ] = None,
+    config_paths: EvalConfigsOption = None,
     datasets: Annotated[
         list[str] | None,
         typer.Option("--dataset", "-d", help="Dataset name or .jsonl path; repeatable."),
@@ -552,10 +611,8 @@ def eval_run(
     judge: Annotated[
         bool, typer.Option("--judge/--no-judge", help="Grade answers with the LLM judge.")
     ] = True,
-    limit: Annotated[
-        int | None, typer.Option(min=1, help="Only the first N items (quick runs).")
-    ] = None,
-    out_dir: Annotated[Path, typer.Option(help="Where raw results go.")] = Path("eval/results"),
+    limit: LimitOption = None,
+    out_dir: OutDirOption = Path("eval/results"),
     repeat: Annotated[
         int, typer.Option(min=1, help="Run each config/dataset N times; report mean (min-max).")
     ] = 1,
@@ -565,8 +622,6 @@ def eval_run(
     The judge always uses the first config's LLM, so every config gets the same judge. With
     --repeat N > 1, raw results are saved per repeat (<config>__<dataset>__r1.jsonl, ...).
     """
-    from datetime import datetime
-
     from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM
     from vaultmind.eval.dataset import load_dataset
     from vaultmind.eval.runner import (
@@ -577,13 +632,8 @@ def eval_run(
         run_config,
         save_report,
     )
-    from vaultmind.store.cards import CardStore
 
-    paths: list[Path | None] = list(config_paths) if config_paths else [None]
-    configs = {(path.stem if path else "default"): load_config(path) for path in paths}
-    if len(configs) != len(paths):
-        typer.secho("[FAIL] Config file names must be unique (they name the columns).", fg="red")
-        raise typer.Exit(1)
+    configs = _eval_configs(config_paths)
     try:
         check_compatible(configs)
         loaded = {name: load_dataset(_dataset_path(name)) for name in (datasets or ["cuad"])}
@@ -591,25 +641,14 @@ def eval_run(
         typer.secho(f"[FAIL] {exc}", fg="red")
         raise typer.Exit(1) from exc
 
-    run_dir = out_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = _run_dir(out_dir)
     judge_llm = OllamaLLM.from_config(next(iter(configs.values()))) if judge else None
     runs: list[list[RunReport]] = []  # one entry per (config, dataset): its repeats
-    rerankers: dict[str, Reranker | None] = {}  # loaded once per model, shared across configs
+    rerankers: dict[str, Reranker | None] = {}
     for config_name, cfg in configs.items():
-        with (
-            _store(cfg) as (index, registry),
-            _ollama_errors(),
-            closing(CardStore(_db_path(cfg))) as cards,
-        ):
-            if index.count() == 0:
-                typer.secho(
-                    f"[FAIL] {config_name}: the index is empty. Run: vaultmind ingest", fg="red"
-                )
-                raise typer.Exit(1)
+        with _eval_stores(cfg, config_name) as (index, registry, cards):
             llm, embedder = OllamaLLM.from_config(cfg), OllamaEmbedder.from_config(cfg)
-            if cfg.retrieval.rerank and cfg.models.reranker not in rerankers:
-                rerankers[cfg.models.reranker] = _reranker(cfg)
-            reranker = rerankers.get(cfg.models.reranker) if cfg.retrieval.rerank else None
+            reranker = _shared_reranker(cfg, rerankers)
             for dataset_name, items in loaded.items():
                 items = items[:limit] if limit else items
 
@@ -642,41 +681,33 @@ def eval_run(
                     repeats.append(report)
                 runs.append(repeats)
 
-    typer.echo()
-    typer.echo(format_repeat_table(runs))
-    if repeat > 1:
-        typer.echo(f"Each value: mean (min-max) over {repeat} repeats.")
-    typer.echo()
-    typer.echo(f"Raw results: {run_dir}")
+    _print_table(format_repeat_table(runs), repeat, run_dir)
 
 
 @eval_app.command("tasks")
 def eval_tasks(
-    config_paths: Annotated[
-        list[Path] | None,
-        typer.Option("--config", "-c", help="Config to score; repeat to compare several."),
-    ] = None,
+    config_paths: EvalConfigsOption = None,
     dataset: Annotated[
         str, typer.Option("--dataset", "-d", help="Task set name or .jsonl path.")
     ] = "personal_tasks",
     judge: Annotated[
         bool, typer.Option("--judge/--no-judge", help="Grade answers with the key-facts judge.")
     ] = True,
-    limit: Annotated[
-        int | None, typer.Option(min=1, help="Only the first N items (quick runs).")
-    ] = None,
+    limit: LimitOption = None,
     only: Annotated[
-        list[str] | None, typer.Option("--task", help="Only items with this task label.")
+        list[str] | None,
+        typer.Option("--task", help="Only items with this task label; repeatable."),
     ] = None,
-    out_dir: Annotated[Path, typer.Option(help="Where raw results go.")] = Path("eval/results"),
+    out_dir: OutDirOption = Path("eval/results"),
     repeat: Annotated[
         int, typer.Option(min=1, help="Run each config N times; report mean (min-max).")
     ] = 1,
 ) -> None:
-    """Score the document agent (planner + recipes) on a task set: router accuracy, task
-    success with the key-facts judge, latency per task type."""
-    from datetime import datetime
+    """Score the document agent (planner + recipes) on a task set.
 
+    Reports router accuracy, task success with the key-facts judge and latency per task type.
+    The judge always uses the first config's LLM, as in 'eval run'.
+    """
     from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM
     from vaultmind.eval.runner import format_repeat_table
     from vaultmind.eval.task_runner import (
@@ -687,13 +718,8 @@ def eval_tasks(
         save_task_report,
     )
     from vaultmind.eval.tasks import load_tasks
-    from vaultmind.store.cards import CardStore
 
-    paths: list[Path | None] = list(config_paths) if config_paths else [None]
-    configs = {(path.stem if path else "default"): load_config(path) for path in paths}
-    if len(configs) != len(paths):
-        typer.secho("[FAIL] Config file names must be unique (they name the columns).", fg="red")
-        raise typer.Exit(1)
+    configs = _eval_configs(config_paths)
     try:
         items = load_tasks(_dataset_path(dataset))
     except (ValueError, OSError) as exc:
@@ -707,28 +733,20 @@ def eval_tasks(
         raise typer.Exit(1)
 
     name = Path(dataset).stem
-    run_dir = out_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = _run_dir(out_dir)
     judge_llm = OllamaLLM.from_config(next(iter(configs.values()))) if judge else None
     runs: list[list[TaskReport]] = []
+    rerankers: dict[str, Reranker | None] = {}
 
-    def progress(result: TaskResult, total: int = len(items)) -> None:
+    def progress(result: TaskResult) -> None:
         route = result.task if result.task == result.gold_task else f"{result.task}!"
         mark = "-" if result.success is None else ("ok" if result.success else "FAIL")
         typer.echo(f"  [{result.id}] {route} {mark} {result.total_ms / 1000:.1f}s")
 
     for config_name, cfg in configs.items():
-        with (
-            _store(cfg) as (index, registry),
-            _ollama_errors(),
-            closing(CardStore(_db_path(cfg))) as cards,
-        ):
-            if index.count() == 0:
-                typer.secho(
-                    f"[FAIL] {config_name}: the index is empty. Run: vaultmind ingest", fg="red"
-                )
-                raise typer.Exit(1)
+        with _eval_stores(cfg, config_name) as (index, registry, cards):
             llm, embedder = OllamaLLM.from_config(cfg), OllamaEmbedder.from_config(cfg)
-            reranker = _reranker(cfg)
+            reranker = _shared_reranker(cfg, rerankers)
             repeats: list[TaskReport] = []
             for r in range(1, repeat + 1):
                 of = f" (repeat {r}/{repeat})" if repeat > 1 else ""
@@ -751,12 +769,7 @@ def eval_tasks(
                 repeats.append(report)
             runs.append(repeats)
 
-    typer.echo()
-    typer.echo(format_repeat_table(runs, TASK_METRIC_NAMES))
-    if repeat > 1:
-        typer.echo(f"Each value: mean (min-max) over {repeat} repeats.")
-    typer.echo()
-    typer.echo(f"Raw results: {run_dir}")
+    _print_table(format_repeat_table(runs, TASK_METRIC_NAMES), repeat, run_dir)
 
 
 @eval_app.command("sweep")

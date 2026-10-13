@@ -71,10 +71,17 @@ def _children_schema(dim: int) -> pa.Schema:
     )
 
 
-def _quote_ids(ids: Sequence[str], pattern: re.Pattern[str]) -> str:
-    """Render ids as a SQL list literal, refusing anything outside the safe charset."""
+def _file_filter(file_id: str) -> str:
+    """The SQL filter for one file's rows, refusing anything that isn't a file id."""
+    if not _FILE_ID_RE.fullmatch(file_id):
+        raise ValueError(f"invalid file id: {file_id!r}")
+    return f"file_id = '{file_id}'"
+
+
+def _quote_ids(ids: Sequence[str]) -> str:
+    """Render chunk ids as a SQL list literal, refusing anything outside the safe charset."""
     for value in ids:
-        if not pattern.fullmatch(value):
+        if not _CHUNK_ID_RE.fullmatch(value):
             raise ValueError(f"invalid id for index filter: {value!r}")
     return ", ".join(f"'{value}'" for value in ids)
 
@@ -165,9 +172,7 @@ class ChunkIndex:
             )
 
     def delete_file(self, file_id: str) -> None:
-        if not _FILE_ID_RE.fullmatch(file_id):
-            raise ValueError(f"invalid file id: {file_id!r}")
-        where = f"file_id = '{file_id}'"
+        where = _file_filter(file_id)
         self._parents.delete(where)
         if self._children is not None:
             self._children.delete(where)
@@ -216,21 +221,14 @@ class ChunkIndex:
     def get_parents(self, parent_ids: Sequence[str]) -> dict[str, ParentSection]:
         if not parent_ids:
             return {}
-        where = f"id IN ({_quote_ids(list(dict.fromkeys(parent_ids)), _CHUNK_ID_RE)})"
+        where = f"id IN ({_quote_ids(list(dict.fromkeys(parent_ids)))})"
         rows = self._parents.search().where(where).limit(None).to_arrow().to_pylist()
         return {r["id"]: _parent_from_row(r) for r in rows}
 
     def parents_for_file(self, file_id: str) -> list[ParentSection]:
         """Every parent section of a file, in document order (`[]` for an unknown file)."""
-        if not _FILE_ID_RE.fullmatch(file_id):
-            raise ValueError(f"invalid file id: {file_id!r}")
-        rows = (
-            self._parents.search()
-            .where(f"file_id = '{file_id}'")
-            .limit(None)
-            .to_arrow()
-            .to_pylist()
-        )
+        where = _file_filter(file_id)
+        rows = self._parents.search().where(where).limit(None).to_arrow().to_pylist()
         return sorted((_parent_from_row(r) for r in rows), key=_parent_order)
 
     def close(self) -> None:

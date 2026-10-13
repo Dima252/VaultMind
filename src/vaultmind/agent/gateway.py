@@ -8,7 +8,6 @@ before a write, and runs every observation through the injection guard and wraps
 from __future__ import annotations
 
 import json
-import math
 import re
 import time
 from collections.abc import Sequence
@@ -18,7 +17,7 @@ from pydantic import ValidationError
 
 from vaultmind.agent.baseline import Source
 from vaultmind.agent.guard import find_injections, neutralize
-from vaultmind.agent.tools import Tool, ToolContext, default_tools
+from vaultmind.agent.tools import CHARS_PER_TOKEN, Tool, ToolContext, default_tools
 from vaultmind.agent.types import (
     AmbiguousDocument,
     ApprovalRequired,
@@ -29,7 +28,6 @@ from vaultmind.agent.types import (
 from vaultmind.core.providers import ToolCall, ToolSpec
 
 BUDGET_USED = "step budget used, answer with what you have"
-CHARS_PER_TOKEN = 4  # the budget's estimate: tokens = ceil(chars / 4)
 MAX_ERROR_CHARS = 400
 
 DATA_NOTE = (
@@ -134,10 +132,6 @@ class Gateway:
             warnings=warnings,
             duration_ms=_ms(start),
         )
-
-
-def tokens(text: str) -> int:
-    return math.ceil(len(text) / CHARS_PER_TOKEN)
 
 
 def truncate(text: str, limit: int) -> str:

@@ -1,1 +1,1 @@
-"""Query engine: the LangGraph corrective-RAG state machine (Phases 1-3)."""
+"""Query engine: the LangGraph agent (planner, corrective RAG, recipes) and its tools."""

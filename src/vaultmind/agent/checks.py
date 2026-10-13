@@ -13,6 +13,7 @@ from typing import Any
 
 from vaultmind.agent.baseline import Source, is_abstention
 from vaultmind.agent.guard import delimit_source, neutralize
+from vaultmind.agent.text import one_line
 from vaultmind.agent.types import Contradiction, UnsupportedClaim
 from vaultmind.core.providers import LLM, Message
 
@@ -240,7 +241,7 @@ def _text(item: dict[str, Any], key: str) -> str:
     value = item.get(key)
     if not isinstance(value, str):
         raise ValueError(f"{key!r} must be a string")
-    return _one_line(value, MAX_CLAIM_CHARS)
+    return one_line(value, MAX_CLAIM_CHARS)
 
 
 def _int(item: dict[str, Any], key: str) -> int:
@@ -254,10 +255,5 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _one_line(text: str, limit: int) -> str:
-    line = " ".join(text.split())
-    return line if len(line) <= limit else line[: limit - 3].rstrip() + "..."
-
-
 def _excerpt(raw: str) -> str:
-    return _one_line(raw, _EXCERPT_CHARS) or "<empty>"
+    return one_line(raw, _EXCERPT_CHARS) or "<empty>"

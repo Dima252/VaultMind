@@ -62,11 +62,11 @@ class AgentConfig(_Section):
     groundedness_check: bool = False
     smalltalk: bool = True  # nothing passed on an unclassified message: one short reply
     router: bool = True  # plan and route every message; false: every message is a lookup
-    world_knowledge: bool = False  # true: labeled answers from the model's own knowledge
-    catalog_files: int = Field(default=60, ge=0)  # planner sees the whole catalog up to this
+    world_knowledge: bool = False  # true: labeled answers from the model's own knowledge (unwired)
+    catalog_files: int = Field(default=60, ge=0)  # documents listed in the planner prompt
     max_steps: int = Field(default=6, gt=0)  # tool calls per open task
     observation_tokens: int = Field(default=2000, gt=0)  # per tool result shown to the model
-    think_open: bool = True  # thinking on for open-task reasoning steps only
+    think_open: bool = True  # thinking on for open-task tool steps only (M3 loop, unwired)
 
 
 class IngestConfig(_Section):

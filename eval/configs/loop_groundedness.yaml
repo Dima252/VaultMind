@@ -1,3 +1,8 @@
-# Loop + groundedness check (one extra LLM call per answer).
+# loop_variants_rewrite.yaml + groundedness check (one extra LLM call per answer).
 agent:
+  query_variants: 2
+  rewrite: true
+  detect_contradictions: false
   groundedness_check: true
+  smalltalk: false
+  router: false

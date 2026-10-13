@@ -1,20 +1,18 @@
 """Agent runs and their trace events in the app database (`runs`, `trace_events` tables).
 
-The schema lives in `store/registry.py` (migration 2); opening a TraceStore applies `migrate`.
+The schema lives in `store/registry.py` (migration 2), applied when a TraceStore opens.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 
 from vaultmind.agent.types import AgentResult, TraceEvent
-from vaultmind.store.registry import migrate
+from vaultmind.store.registry import SqliteStore
 
 
 @dataclass(frozen=True)
@@ -27,27 +25,7 @@ class StoredRun:
     events: list[TraceEvent]  # in the order they happened
 
 
-class TraceStore:
-    def __init__(self, db_path: Path) -> None:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._conn: sqlite3.Connection | None = sqlite3.connect(
-            db_path, check_same_thread=False, isolation_level=None
-        )
-        self._conn.row_factory = sqlite3.Row
-        try:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys=ON")
-            migrate(self._conn)
-        except BaseException:
-            self.close()
-            raise
-
-    def _db(self) -> sqlite3.Connection:
-        if self._conn is None:
-            raise RuntimeError("trace store is closed")
-        return self._conn
-
+class TraceStore(SqliteStore):
     def save(self, result: AgentResult) -> str:
         """Store a run with its trace; returns the new run id."""
         run_id = uuid.uuid4().hex
@@ -121,12 +99,6 @@ class TraceStore:
             event = TraceEvent(r["node"], float(r["duration_ms"]), json.loads(r["data"]))
             events.setdefault(r["run_id"], []).append(event)
         return events
-
-    def close(self) -> None:
-        with self._lock:
-            if self._conn is not None:
-                self._conn.close()
-                self._conn = None
 
 
 def _to_run(row: sqlite3.Row, events: list[TraceEvent]) -> StoredRun:

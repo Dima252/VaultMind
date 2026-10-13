@@ -8,39 +8,16 @@ a renamed or moved file keeps its card, and `prune` drops cards no file has any 
 from __future__ import annotations
 
 import json
-import sqlite3
-import threading
 from collections.abc import Collection
 from dataclasses import asdict
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from vaultmind.core.models import DocCard, KeyDate, SectionSummary
-from vaultmind.store.registry import migrate
+from vaultmind.store.registry import SqliteStore
 
 
-class CardStore:
-    def __init__(self, db_path: Path) -> None:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._conn: sqlite3.Connection | None = sqlite3.connect(
-            db_path, check_same_thread=False, isolation_level=None
-        )
-        self._conn.row_factory = sqlite3.Row
-        try:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys=ON")
-            migrate(self._conn)
-        except BaseException:
-            self.close()
-            raise
-
-    def _db(self) -> sqlite3.Connection:
-        if self._conn is None:
-            raise RuntimeError("card store is closed")
-        return self._conn
-
+class CardStore(SqliteStore):
     def put(self, card: DocCard) -> None:
         """Store a card, replacing one with the same key."""
         with self._lock:
@@ -97,12 +74,6 @@ class CardStore:
             for sha in gone:
                 removed += db.execute("DELETE FROM doc_cards WHERE sha256 = ?", (sha,)).rowcount
         return removed
-
-    def close(self) -> None:
-        with self._lock:
-            if self._conn is not None:
-                self._conn.close()
-                self._conn = None
 
 
 def _to_json(card: DocCard) -> dict[str, Any]:

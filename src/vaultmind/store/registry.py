@@ -100,7 +100,7 @@ def _from_row(row: sqlite3.Row) -> FileRecord:
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    """Bring the app database to SCHEMA_VERSION. Every store on `vaultmind.sqlite` calls this."""
+    """Bring the app database to SCHEMA_VERSION."""
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
     if version > SCHEMA_VERSION:
         raise RuntimeError(
@@ -114,27 +114,38 @@ def migrate(conn: sqlite3.Connection) -> None:
         )
 
 
-class Registry:
+class SqliteStore:
+    """A store on the app database (`vaultmind.sqlite`): one autocommit connection (WAL, foreign
+    keys on), migrated to SCHEMA_VERSION on open and shared by its methods under a lock."""
+
     def __init__(self, db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._conn: sqlite3.Connection | None = sqlite3.connect(
-            db_path, check_same_thread=False, isolation_level=None
-        )
-        self._conn.row_factory = sqlite3.Row
+        conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        conn.row_factory = sqlite3.Row
         try:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys=ON")
-            migrate(self._conn)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            migrate(conn)
         except BaseException:
-            self.close()
+            conn.close()
             raise
+        self._conn: sqlite3.Connection | None = conn
 
     def _db(self) -> sqlite3.Connection:
         if self._conn is None:
-            raise RuntimeError("registry is closed")
+            raise RuntimeError(f"{type(self).__name__} is closed")
         return self._conn
 
+    def close(self) -> None:
+        """Idempotent."""
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+
+
+class Registry(SqliteStore):
     def get(self, file_id: str) -> FileRecord | None:
         with self._lock:
             row = self._db().execute(f"SELECT {_COLUMNS} FROM files WHERE id = ?", (file_id,))
@@ -183,9 +194,3 @@ class Registry:
     def remove(self, file_id: str) -> None:
         with self._lock:
             self._db().execute("DELETE FROM files WHERE id = ?", (file_id,))
-
-    def close(self) -> None:
-        with self._lock:
-            if self._conn is not None:
-                self._conn.close()
-                self._conn = None

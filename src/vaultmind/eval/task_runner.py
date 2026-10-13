@@ -8,7 +8,6 @@ item succeeds when the answer asks instead), forbidden strings, and latency per 
 from __future__ import annotations
 
 import dataclasses
-import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -20,7 +19,7 @@ from vaultmind.core.config import Config
 from vaultmind.core.providers import LLM, Embedder, Reranker
 from vaultmind.eval.judge import JudgeError, judge_clarify, judge_key_facts
 from vaultmind.eval.metrics import TASK_SUCCESS_THRESHOLD, percentile, router_accuracy
-from vaultmind.eval.runner import _safe_name
+from vaultmind.eval.runner import write_report
 from vaultmind.eval.tasks import TaskItem
 from vaultmind.store.cards import CardStore
 from vaultmind.store.index import ChunkIndex
@@ -169,15 +168,4 @@ def task_metrics(results: Sequence[TaskResult]) -> dict[str, float | None]:
 def save_task_report(report: TaskReport, out_dir: Path, *, repeat: int | None = None) -> Path:
     """Write ``<out_dir>/<config>__<dataset>[__r<n>].jsonl``: one TaskResult per line, then a
     final ``{"metrics": {...}}`` line. Returns the path."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{_safe_name(report.config_name)}__{_safe_name(report.dataset_name)}"
-    if repeat is not None:
-        stem += f"__r{repeat}"
-    path = out_dir / f"{stem}.jsonl"
-    rows: list[object] = [dataclasses.asdict(r) for r in report.items]
-    rows.append({"metrics": report.metrics})
-    content = "".join(
-        json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in rows
-    )
-    path.write_text(content, encoding="utf-8", newline="\n")
-    return path
+    return write_report(report, [dataclasses.asdict(r) for r in report.items], out_dir, repeat)

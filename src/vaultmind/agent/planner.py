@@ -3,18 +3,18 @@
 It sees the document catalog, the recent conversation and the message, and returns a `Plan`:
 the task, the documents named (resolved to file ids with `Catalog.resolve`), the language to
 answer in, a focus topic or fields to extract, and a clarifying question when the request
-can't be acted on. Output it can't parse falls back to a lookup, today's behavior.
+can't be acted on. Output it can't parse falls back to a lookup (the corrective graph).
 """
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
 from vaultmind.agent.catalog import Catalog
+from vaultmind.agent.text import clean, one_line, parse_json
 from vaultmind.agent.types import TASKS, AmbiguousDocument, DocumentNotFound, Plan, TaskKind
 from vaultmind.core.providers import LLM, Message
 
@@ -121,7 +121,7 @@ def plan_messages(question: str, history: Sequence[Message], catalog: str) -> li
     parts = [f"The user's documents (name | type | language | summary):\n{catalog}"]
     if turns := list(history)[-HISTORY_TURNS:]:
         transcript = "\n".join(
-            f"{m['role'].capitalize()}: {_one_line(m['content'], HISTORY_CHARS)}" for m in turns
+            f"{m['role'].capitalize()}: {one_line(m['content'], HISTORY_CHARS)}" for m in turns
         )
         parts.append(f"Conversation so far:\n{transcript}")
     parts.append(f"Latest message: {question}")
@@ -142,24 +142,19 @@ def has_previous_answer(history: Sequence[Message]) -> bool:
 
 
 def _parse(raw: str, fallback_language: str) -> Plan:
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("no JSON object in the planner output")
-    data = json.loads(raw[start : end + 1])  # JSONDecodeError is a ValueError
-    if not isinstance(data, dict):
-        raise ValueError("the planner output is not a JSON object")
+    data = parse_json(raw)
     task = data.get("task")
     if task not in TASKS:
         raise ValueError(f"unknown task {task!r}")
-    language = _text(data.get("language")).lower()[:5] or fallback_language
-    clarify = _text(data.get("clarify"))
+    language = clean(data.get("language")).lower()[:5] or fallback_language
+    clarify = clean(data.get("clarify"))
     return Plan(
         task=task,
         mentions=_texts(data.get("documents"), MAX_MENTIONS),
         language=language if re.fullmatch(r"[a-z]{2}", language) else fallback_language,
         steps=_texts(data.get("steps"), MAX_STEPS),
         clarify=clarify or None,
-        focus=_text(data.get("focus")) or None,
+        focus=clean(data.get("focus")) or None,
         fields=_texts(data.get("fields"), MAX_FIELDS),
     )
 
@@ -190,11 +185,10 @@ def _resolve(parsed: Plan, history: Sequence[Message], catalog: Catalog) -> Plan
             documents.append(entry.file.id)
     resolved = replace(parsed, task=task, documents=tuple(documents))
 
-    if task == "lookup":
-        # Lookups search the whole vault; a named document that isn't there is no reason to
-        # stop, and the graph's grading decides "not found". A stray clarify is dropped.
-        return Planned(replace(resolved, clarify=None), tuple(missing))
-    if missing:
+    if task == "lookup" or missing:
+        # Lookups search the whole vault, so a named document that isn't there is no reason to
+        # stop: the graph's grading decides "not found". Other tasks with a missing document
+        # answer "not found" right away. Either way a stray clarify is dropped.
         return Planned(replace(resolved, clarify=None), tuple(missing))
     if resolved.clarify:
         return Planned(resolved)
@@ -206,7 +200,7 @@ def _resolve(parsed: Plan, history: Sequence[Message], catalog: Catalog) -> Plan
             return Planned(replace(resolved, documents=(entries[0].file.id,)))
         names = tuple(e.name for e in entries)
         if not names:
-            return Planned(resolved)  # an empty vault: the recipe says so
+            return Planned(resolved)  # an empty vault: nothing to read, so "not found"
         table = CLARIFY_TWO if needed == 2 else CLARIFY_NONE
         question = _pick(table, parsed.language).format(
             verb="summarize" if task == "summarize" else "work from",
@@ -229,19 +223,10 @@ def _pick(table: dict[str, str], language: str) -> str:
     return table.get(language, table["en"])
 
 
-def _text(value: object) -> str:
-    return " ".join(value.split()) if isinstance(value, str) else ""
-
-
 def _texts(value: object, limit: int) -> tuple[str, ...]:
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
         return ()
-    cleaned = [t for t in (_text(v) for v in value) if t]
+    cleaned = [t for t in (clean(v) for v in value) if t]
     return tuple(dict.fromkeys(cleaned))[:limit]
-
-
-def _one_line(text: str, limit: int) -> str:
-    flat = " ".join(text.split())
-    return flat if len(flat) <= limit else flat[: limit - 3] + "..."

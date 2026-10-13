@@ -102,6 +102,17 @@ class RunReport:
     metrics: dict[str, float | None]  # keys = METRIC_NAMES; None when no item qualifies
 
 
+class Report(Protocol):
+    """What saving and the table need from a report: `RunReport`, `task_runner.TaskReport`."""
+
+    @property
+    def config_name(self) -> str: ...
+    @property
+    def dataset_name(self) -> str: ...
+    @property
+    def metrics(self) -> Mapping[str, float | None]: ...
+
+
 def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000.0
 
@@ -392,13 +403,19 @@ def save_report(report: RunReport, out_dir: Path, *, repeat: int | None = None) 
     final ``{"metrics": {...}}`` line. Returns the path.
 
     With ``repeat`` (1-based, for ``eval run --repeat``), the name ends in ``__r<repeat>``."""
+    return write_report(report, [dataclasses.asdict(r) for r in report.items], out_dir, repeat)
+
+
+def write_report(
+    report: Report, rows: Sequence[object], out_dir: Path, repeat: int | None = None
+) -> Path:
+    """`save_report` for any report: ``rows`` (its items as dicts), then its metrics line."""
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{_safe_name(report.config_name)}__{_safe_name(report.dataset_name)}"
     if repeat is not None:
         stem += f"__r{repeat}"
     path = out_dir / f"{stem}.jsonl"
-    rows: list[object] = [dataclasses.asdict(r) for r in report.items]
-    rows.append({"metrics": report.metrics})
+    rows = [*rows, {"metrics": report.metrics}]
     content = "".join(
         json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in rows
     )
@@ -442,17 +459,6 @@ def _format_repeats(name: str, values: Sequence[float | None]) -> str:
 def format_table(reports: Sequence[RunReport]) -> str:
     """ASCII table: one row per metric, one column per report (``config / dataset``)."""
     return format_repeat_table([[r] for r in reports])
-
-
-class Report(Protocol):
-    """What the table needs from a report (`RunReport` and `eval.task_runner.TaskReport`)."""
-
-    @property
-    def config_name(self) -> str: ...
-    @property
-    def dataset_name(self) -> str: ...
-    @property
-    def metrics(self) -> Mapping[str, float | None]: ...
 
 
 def format_repeat_table(

@@ -1,9 +1,9 @@
 # VaultMind
 
 **A fully local, privacy-first AI assistant for your own documents.**
-Drop in PDFs, Markdown or text files and ask questions about them. VaultMind finds the relevant passages, checks that they actually answer the question, retries with a better search when they don't, and answers with citations, all on your own machine. Nothing is sent to a cloud API.
+Drop in PDFs, Markdown or text files and ask questions about them. VaultMind finds the relevant passages, checks that they actually answer the question, and answers with citations, or says the answer isn't in your documents. All of it runs on your own machine; nothing is sent to a cloud API.
 
-> 🚧 **Status: in development.** Working today: ingestion (including Hebrew PDFs), hybrid retrieval with reranking, the corrective loop with an injection guard and a contradiction check, traces, the evaluation harness, and the app (`vaultmind ui`). It answers lookup questions well, but can't yet summarize, list, compare or plan multi-step work. Turning it into a full document agent is in progress ([roadmap](#roadmap-from-search-to-document-agent)): document cards, the document catalog, local tools and the task evaluation are built; the planner that routes requests to them comes next. See [status](docs/STATUS.md), [results](docs/RESULTS.md) and the [execution plan](docs/EXECUTION_PLAN.md).
+> 🚧 **Status: in development.** Working and measured: ingestion (including Hebrew PDFs), hybrid retrieval with reranking, the corrective loop with an injection guard and a contradiction check, traces, the evaluation harness, and the app (`vaultmind ui`). Lookup questions are answered well ([results](docs/RESULTS.md)). Turning it into a full document agent is in progress ([roadmap](#roadmap-from-search-to-document-agent)): document cards, local tools, and a planner that routes summarize, list, compare and extract requests to fixed tool recipes are built and unit-tested, but **not yet checked against the real models**, so treat those tasks as experimental. Multi-step tasks come next. See [status](docs/STATUS.md) and the [execution plan](docs/EXECUTION_PLAN.md).
 
 <!-- TODO(Phase 7): demo GIF here, showing the agent planning a task, reading documents step by step, and answering with citations -->
 
@@ -22,6 +22,7 @@ Most "chat with your documents" tools upload your files to someone else's server
 - **Corrective RAG loop.** A cross-encoder reranker grades the retrieved passages. If none are good enough, the agent reports that the answer isn't in your documents and shows the closest matches, instead of guessing. Chat follow-ups are resolved into standalone questions. Query rewriting and query variants are available as switches; they are off by default because they didn't improve answers in our measurements ([results](docs/RESULTS.md)).
 - **Prompt-injection guard.** Retrieved text goes to the model as quoted data, and passages containing instructions aimed at AI tools are flagged. When documents disagree, the answer states both claims with their sources.
 - **Citations.** Each answer links to the file and page it came from.
+- **Document tasks (experimental, not yet verified on the real models).** A document card is written for each file at ingest (type, summary, outline, key dates and entities). A planner call decides what each message asks for: lookups take the corrective loop, while "what documents do I have?", "summarize X", "compare X and Y" and "extract ... as a table" run fixed sequences of local, read-only tools and cite the sections they read. Ambiguous requests ("which syllabus?") get a clarifying question.
 - **Agent trace.** For every answer, see the queries that were tried, how each passage scored, and where the time went.
 - **Built-in evaluation.** Every pipeline component can be toggled in config, and `vaultmind eval` measures what each one contributes.
 
@@ -37,10 +38,14 @@ flowchart LR
     C --> D[Heading-aware chunking<br/>small child chunks inside<br/>larger parent sections]
     D --> E[Embed child chunks]
     E --> F[(LanceDB<br/>vectors + full-text index)]
-    B -. registry .-> G[(SQLite<br/>files, jobs, chats, traces)]
+    B -. registry .-> G[(SQLite<br/>files, chats, traces, cards)]
+    E --> H[Document card<br/>background LLM job]
+    H --> G
 ```
 
 ### Answering a question
+
+A planner call first decides what kind of request a message is (see the [roadmap](#roadmap-from-search-to-document-agent)). Lookups, the most common kind, go through the corrective loop:
 
 ```mermaid
 flowchart TD
@@ -54,11 +59,11 @@ flowchart TD
     K -- retries exhausted --> N[Not found in your documents<br/>+ closest matches]
 ```
 
-The loop is a [LangGraph](https://github.com/langchain-ai/langgraph) state machine. Grading uses reranker scores rather than one LLM call per passage, which makes it faster and more reliable on local hardware. LLM calls are reserved for query analysis, rewriting, and the final answer.
+The loop is a [LangGraph](https://github.com/langchain-ai/langgraph) state machine. Grading uses reranker scores rather than one LLM call per passage, which makes it faster and more reliable on local hardware. LLM calls are reserved for planning, query analysis, rewriting, document cards at ingest, the optional checks, and the answer. By default the analyze step runs only when there is chat history to resolve, and rewriting is off (it didn't help in the measurements).
 
 ### Roadmap: from search to document agent
 
-Today every message is a lookup: search, keep the best passages, answer. That's why "summarize this document", "what documents do I have?" and "compare X with Y" fail. The next phase turns VaultMind into a local document agent: a ReAct loop with human-in-the-loop, behind fast paths so simple questions stay fast.
+Until Phase 5.5 every message was a lookup: search, keep the best passages, answer. That's why "summarize this document", "what documents do I have?" and "compare X with Y" failed. Phase 5.5 turns VaultMind into a local document agent: a ReAct loop with human-in-the-loop, behind fast paths so simple questions stay fast.
 
 ```mermaid
 flowchart TD
@@ -76,10 +81,11 @@ flowchart TD
     T -- done --> R[Respond<br/>verify citations, stream]
 ```
 
-- **Document cards** written at ingest (type, summary, outline, key dates and entities), so the agent knows your library and can work with whole documents within a local context window.
-- **Local tools**: list documents, outline, read pages or sections, search one file, summarize, extract into a table, calculate. All plain Python over the local index. Writes need your approval, and the agent has no delete tool.
-- **It asks instead of guessing** when a request is ambiguous ("which syllabus?") or a job is long.
-- **Measured** like everything else: a new task eval set (half Hebrew), with lookup quality and latency held where they are today.
+Where it stands:
+
+- **Built:** document cards at ingest (built for a real 47-file vault), so the agent knows your library and can work with whole documents within a local context window; local read-only tools (list documents, outline, read pages or sections, search one file, summarize, extract into a table, calculate), all plain Python over the local index behind a validating gateway; the planner and the recipes for list, summarize, compare, extract and generate; a task eval set (63 items, half Hebrew).
+- **Next:** checking the planner and recipes against the real models and measuring them (router accuracy, task success, latency), with lookup quality and latency held where they are.
+- **Then:** the open reasoning loop for multi-step tasks; asking you before long jobs and before any write (writes need your approval, and the agent has no delete tool); retrieval upgrades for cross-lingual and two-part questions; a live step list in the app.
 
 Details and milestones: [execution plan, Phase 5.5](docs/EXECUTION_PLAN.md).
 
@@ -92,7 +98,7 @@ Details and milestones: [execution plan, Phase 5.5](docs/EXECUTION_PLAN.md).
 | Embeddings | qwen3-embedding 0.6B | Small, fast, high retrieval quality |
 | Reranker | bge-reranker-v2-m3 | Cross-encoder; more accurate relevance grading than an LLM, in milliseconds |
 | Vector store | [LanceDB](https://lancedb.com) | Embedded and file-based, with built-in full-text search for hybrid retrieval |
-| App state | SQLite | File registry, ingestion jobs, chat history, traces |
+| App state | SQLite | File registry, chat history, traces, document cards |
 | Orchestration | LangGraph | Cyclic agent state, per-step event streaming |
 | Parsing | pymupdf4llm | PDF to Markdown with heading structure and page numbers |
 | UI | [NiceGUI](https://nicegui.io) (browser tab on 127.0.0.1; optional native window) | Event-driven Python UI, with no separate API layer. Browser mode by default: the native window's WebView2 contacts Microsoft by itself |
@@ -101,7 +107,7 @@ Models are configurable. Every model call goes through a small provider interfac
 
 ## Getting started
 
-**Prerequisites:** [Ollama](https://ollama.com/download), [uv](https://docs.astral.sh/uv/), and a GPU with 12 GB+ of VRAM recommended (it also runs on CPU, but slowly).
+**Prerequisites:** [Ollama](https://ollama.com/download), [uv](https://docs.astral.sh/uv/), and a GPU. It's developed on an NVIDIA card with 16 GB of VRAM, where the LLM (~11 GB at the configured context), the embedder and the reranker all fit; with less VRAM, Ollama moves part of the model to the CPU and answers get slower. The `rerank` extra below installs a CUDA build of torch.
 
 ```bash
 git clone https://github.com/Dima252/VaultMind.git
@@ -115,13 +121,14 @@ uv run vaultmind pull-reranker   # one-time download of bge-reranker-v2-m3 (~2.3
 uv run vaultmind doctor     # checks Ollama and the models
 ```
 
-After these setup steps nothing touches the network: the reranker is loaded from the local cache in offline mode. To skip the reranker, run plain `uv sync` and set `retrieval.rerank: false`.
+After these setup steps nothing touches the network: the reranker is loaded from the local cache in offline mode. To skip the reranker (for example on a machine without an NVIDIA GPU), run plain `uv sync` and set `retrieval.rerank: false`.
 
 Put your documents in `vault/` (PDF, Markdown, or text), then:
 
 ```bash
 uv run vaultmind ingest                      # index new/changed files, forget deleted ones
 uv run vaultmind ask "What does the contract say about termination?"
+uv run vaultmind ask "What documents do I have?" --trace   # a document task (experimental); --trace shows the route and each step
 ```
 
 Or use the app, which watches `vault/`, indexes changes as they happen and writes a document card for each file in the background:
@@ -137,7 +144,7 @@ All settings live in [`config/default.yaml`](config/default.yaml). To override t
 
 ## Evaluation
 
-Current numbers (RTX 5070 Ti, `qwen3:14b`). Full ablations, per phase, are in [docs/RESULTS.md](docs/RESULTS.md):
+Current numbers (RTX 5070 Ti, `qwen3:14b`) on a 25-contract subset of [CUAD](https://www.atticusprojectai.org/cuad), a small adversarial set, and the author's own documents. Full ablations, per phase, are in [docs/RESULTS.md](docs/RESULTS.md):
 
 | | Phase 2 baseline | Today |
 |---|---:|---:|
@@ -147,7 +154,7 @@ Current numbers (RTX 5070 Ti, `qwen3:14b`). Full ablations, per phase, are in [d
 | Planted prompt injections resisted | 6/8 | 8/8 (40/40 in a targeted test) |
 | Median time to a full answer | 1.4 s | 1.5 s |
 
-What helped most was retrieval: hybrid search plus a cross-encoder reranker. The agent's query rewriting didn't help on these datasets, and the write-up says so.
+What helped most was retrieval: hybrid search plus a cross-encoder reranker. The agent's query rewriting didn't help on these datasets, and the write-up says so. These are lookup numbers; the document tasks (summarize, compare, ...) get their own eval (`vaultmind eval tasks`: router accuracy, task success, latency per task), not run on the real models yet.
 
 The pipeline is measured against a test set of questions with known source passages, including questions whose answer is deliberately absent from the documents:
 
@@ -165,7 +172,7 @@ Each component (hybrid search, reranking, small-to-big retrieval, the rewrite lo
 
 ```bash
 uv run pytest          # unit tests (use fake models; no Ollama needed)
-uv run pytest -m ollama  # integration tests against a running Ollama
+uv run pytest -m ollama  # integration tests: needs Ollama with the models, and the reranker
 uv run ruff check . && uv run ruff format --check .
 uv run mypy src tests
 ```
@@ -176,9 +183,9 @@ src/vaultmind/
   ingest/   parsers, chunker, pipeline, queue + folder watcher, document cards
   store/    LanceDB index; SQLite registry, chats, traces, document cards
   agent/    LangGraph graph and nodes, retrieval, injection guard, checks,
-            document catalog, tools, tool gateway
+            planner, recipes, document catalog, tools, tool gateway
   app/      engine the UI runs on, export, citation highlighting, privacy check
-  eval/     datasets, task set, metrics, judges, runner, CUAD importer
+  eval/     datasets, task set, metrics, judges, runners, CUAD importer
   ui/       NiceGUI interface
 config/     YAML configuration
 eval/       evaluation configs, datasets and fixtures (results stay local)
@@ -188,8 +195,8 @@ tests/      unit tests and fake providers
 
 ## Privacy
 
-VaultMind makes network connections only to the local Ollama daemon (`127.0.0.1`). The one exception is downloading models on first setup. The app serves its UI on `127.0.0.1` only, refuses requests from other websites, and shows a live badge that checks its own connections. A test that runs the full pipeline with all non-localhost connections blocked is planned for the hardening phase.
+VaultMind makes network connections only to the local Ollama daemon (`127.0.0.1`). The one exception is downloading models on first setup. The app serves its UI on `127.0.0.1` only, refuses requests from other websites, and shows a live badge that checks its own connections. In browser mode (the default) the browser can see the page, so use a separate browser profile without extensions for it. A test that runs the full pipeline with all non-localhost connections blocked is planned for the hardening phase.
 
 ## License
 
-MIT
+MIT. The CUAD eval data is by Hendrycks et al. (NeurIPS 2021) and The Atticus Project, under CC BY 4.0.

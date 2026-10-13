@@ -503,12 +503,12 @@ def _segments(glyphs: list[_Glyph]) -> list[list[str]]:
     return segments
 
 
-def _row_text(glyphs: list[_Glyph], default_rtl: bool = True) -> str:
-    """Logical text of one visual row. Rows and segments without letters (``.1``, ``52``)
-    take the given default direction."""
+def _row_text(glyphs: list[_Glyph]) -> str:
+    """Logical text of one visual row. A row without letters (``.1``, ``52``) is RTL (this
+    only runs on RTL pages); a segment without letters takes the row's direction."""
     segments = _segments(glyphs)
     units = [u for s in segments for u in s]
-    rtl = _is_rtl_text(units) if _has_letters(units) else default_rtl
+    rtl = _is_rtl_text(units) if _has_letters(units) else True
     texts = [_visual_to_logical(s, _is_rtl_text(s) if _has_letters(s) else rtl) for s in segments]
     return "  ".join(reversed(texts) if rtl else texts).strip()
 

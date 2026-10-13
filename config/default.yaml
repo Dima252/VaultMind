@@ -44,12 +44,15 @@ agent:
   router: true                  # one planning call classifies every message (lookup, summarize,
                                 # compare, list...) and picks its path; false: everything is a lookup
   world_knowledge: false        # true: when your documents don't cover it, a clearly labeled
-                                # answer from the local model's own knowledge (still offline)
-  catalog_files: 60             # the planner sees every document's name and one line up to this
-                                # many files; above it, it searches the document cards
+                                # answer from the local model's own knowledge (still offline).
+                                # Not wired yet: nothing reads it
+  catalog_files: 60             # the planner prompt lists up to this many documents (name and
+                                # one line from its card); the rest are only counted, but a
+                                # named document is still matched against every file
   max_steps: 6                  # tool calls an open, multi-step task may make
   observation_tokens: 2000      # longest tool result shown to the model, in tokens
-  think_open: true              # let the model reason before open-task tool calls (slower)
+  think_open: true              # let the model reason before open-task tool calls (slower).
+                                # For the ReAct loop (Phase 5.5 M3); not wired yet
 
 ingest:
   watch: true               # index changes in paths.vault_dir while the app runs

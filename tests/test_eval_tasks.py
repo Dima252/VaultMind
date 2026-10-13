@@ -10,6 +10,18 @@ from pydantic import ValidationError
 from vaultmind.eval.dataset import Turn
 from vaultmind.eval.tasks import TaskItem, load_tasks, save_tasks
 
+TASKS_EXAMPLE = Path(__file__).resolve().parent.parent / "eval" / "datasets" / "tasks_example.jsonl"
+
+
+def test_tasks_example_loads_and_covers_every_field() -> None:
+    items = load_tasks(TASKS_EXAMPLE)
+    assert len(items) == 8
+    for name in TaskItem.model_fields:
+        assert any(name in item.model_fields_set for item in items), name
+    assert {item.task for item in items} >= {"list", "summarize", "compare", "extract", "open"}
+    assert any(item.clarify for item in items) and any(item.forbidden for item in items)
+    assert any(item.language == "he" for item in items)
+
 
 def test_round_trip_keeps_hebrew_and_drops_defaults(tmp_path: Path) -> None:
     items = [

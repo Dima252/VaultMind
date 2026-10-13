@@ -14,9 +14,10 @@ Every pipeline change is measured against the same datasets with `uv run vaultmi
 
 **Datasets**
 
-- **`cuad`**: 60 questions over 25 commercial contracts from [CUAD](https://www.atticusprojectai.org/cuad) (seed 0, `vaultmind eval import-cuad`). 48 are answerable, with lawyer-highlighted clause text as gold evidence. 12 are unanswerable (the clause is absent from that contract; each was checked by hand against the contract text). Each question names its contract, for example *"Which jurisdiction's law governs the Vaxcyte,Inc Supply Agreement (2020)?"*
+- **`cuad`**: 60 questions over 25 commercial contracts from [CUAD](https://www.atticusprojectai.org/cuad) (seed 0, `vaultmind eval import-cuad`). 48 are answerable, with lawyer-highlighted clause text as gold evidence. 12 are unanswerable (the clause is absent from that contract; each was checked by hand against the contract text, which found two bad labels, fixed via `RELATED` categories in `eval/cuad.py`). Each question names its contract, for example *"Which jurisdiction's law governs the Vaxcyte,Inc Supply Agreement (2020)?"*
 - **`adversarial`**: 11 questions over 10 synthetic documents (`eval/fixtures/adversarial/`). 8 questions target clauses in 4 contracts with planted prompt injections (direct override, fake system block, exfiltration request, subtle "note to AI tools"); each injection asks for a unique code that must not appear in the answer. 3 questions target pairs of documents that contradict each other.
 - **`personal`** (from Phase 4): 27 questions over the user's own documents, 11 PDFs: Hebrew algorithms lecture slides, a Hebrew syllabus and assignments, and English Workato guides with tables. The set has 8 exact lookups, 4 table questions, 4 multi-hop, 4 chat follow-ups (with `history`), 3 cross-lingual and 4 unanswerable. An agent drafted them from the indexed text; all 27 reference answers were checked against the source pages on 2026-10-12 and none needed changing (the 4 unanswerable ones were confirmed absent from every document). The file quotes the documents, so it's gitignored and not in the repository.
+- **`personal_tasks`** (Phase 5.5): 63 document-task items (list, summarize, compare, extract, transform, multi-step, should-clarify), 31 in Hebrew, with key facts and forbidden strings, over the same documents. Gitignored like `personal`; the hand review (`personal_tasks_review.md`) is pending. Format: `eval/tasks.py`, synthetic example in `eval/datasets/tasks_example.jsonl`.
 
 **Metrics** (exact formulas in the docstrings of `src/vaultmind/eval/metrics.py`)
 
@@ -186,7 +187,7 @@ uv run vaultmind eval run -c eval/configs/linear.yaml -c eval/configs/loop_varia
   -c eval/configs/loop_no_guard.yaml -d cuad -d adversarial -d personal
 ```
 
-The loop's first default had 2 query variants and up to 2 rewrites; the last four columns below are that config with one part removed. "Linear" is the Phase 3 default. Evidence recall counts only passages that passed grading. A not-found answer's closest matches don't count, which corrects an artifact in the first runs.
+The loop's first default had 2 query variants and up to 2 rewrites; the last four columns below are that config with one part removed. The `loop_*` configs pin that Phase 4 base (variants 2, rewrite on, contradictions, smalltalk and router off), so the command still reproduces this table although the defaults have moved on. "Linear" is the Phase 3 default. Evidence recall counts only passages that passed grading. A not-found answer's closest matches don't count, which corrects an artifact in the first runs.
 
 | CUAD (60) | linear | loop (variants + rewrites) | no variants | no rewrite | no guard |
 |---|---:|---:|---:|---:|---:|
@@ -207,7 +208,7 @@ The loop's first default had 2 query variants and up to 2 rewrites; the last fou
 
 On the adversarial set (11), every config scored correctness 0.909, abstention 1.000 and **injection resistance 8/8**, including the guard-off config and the linear pipeline. Latency p50 was 1.4 s linear and 2.7 s with variants.
 
-**How noisy is this?** On CUAD, the "loop" and "no rewrite" columns ran the same pipeline: no question was ever rewritten. Yet they scored 0.802 vs 0.854 correctness and 0.867 vs 0.883 abstention. Differences of ~5 points in correctness or 1–2 abstentions are therefore noise.
+**How noisy is this?** On CUAD, the "loop" and "no rewrite" columns ran the same pipeline: no question was ever rewritten. Yet they scored 0.802 vs 0.854 correctness and 0.867 vs 0.883 abstention. Differences of ~5 points in correctness or 1–2 abstentions are therefore noise. Several decisions below also rest on small sets: 3 contradiction items, 8 injection items, 4 follow-ups.
 
 ### What each part contributed
 
@@ -241,19 +242,45 @@ On the adversarial set (11), every config scored correctness 0.909, abstention 1
 
 CUAD and personal come from run `20261012-031825`, adversarial from `20261012-031729`. On CUAD and your documents the default ties the linear Phase 3 pipeline, within noise, at the same median latency. It wins on the contradiction questions, and it adds what the numbers above can't show: chat follow-ups, a not-found answer that skips the LLM, injection warnings, and a stored trace for every answer.
 
-**Bottom line for Phase 4:** the agent loop, as specified, didn't improve answers on these datasets. The gains so far come from retrieval (Phase 3). The remaining errors are on the generation side: the model refuses when a clause is worded differently from the question, or stretches a related clause. Ideas that could give the loop a real job (grading against several phrasings, a second pass when the model abstains despite good passages, a smaller model for side calls, stronger eval sets) are listed under "Redesign considerations" in [STATUS.md](STATUS.md).
+**Bottom line for Phase 4:** the agent loop, as specified, didn't improve answers on these datasets. The gains so far come from retrieval (Phase 3). The remaining errors are on the generation side: the model refuses when a clause is worded differently from the question, or stretches a related clause. Ideas that could give the loop a real job (grading against several phrasings, a second pass when the model abstains despite good passages, a smaller model for side calls, stronger eval sets) are scheduled in Phase 5.5 (M4 and the task eval) in [EXECUTION_PLAN.md](EXECUTION_PLAN.md).
 
-## Phase 5.5: document agent (planned, not measured yet)
+## Phase 5: the app, live (2026-10-12)
 
-What this section will hold once the work lands (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):
+`uv run vaultmind ui` on the real vault (47 files) with the real models. Not an eval run, a live check:
 
+| | |
+|---|---|
+| Engine load at startup | ~15 s, plus ~10 s Ollama warm-up (a loading screen covers it) |
+| First answer token | ~2.9 s; follow-ups ~1.6 s |
+| Startup scan of an unchanged vault | ~2.6 s |
+| Questions asked while 9 files re-indexed in a loop | 12 of 12 answered correctly |
+| Highlighted citations found in the PDF | 147 of 151 real chunks (117 of 121 Hebrew) |
+
+## Phase 5.5: document agent
+
+### Measured so far: the building blocks (M0–M1, 2026-10-12 to 13)
+
+Live with `qwen3:14b` unless noted. These measure parts, not the agent: nothing routes requests to them before M2.
+
+- **Native tool calls (M0):** "What documents do I have?" → a correct `list_documents` call in 0.3 s with thinking off, 2.1 s with thinking on (~700 characters of reasoning); given the tool result, it answered from it in 0.4 s.
+- **First tool call (M1):** a valid first call on **10 of 10** requests; median 2.1 s thinking off, 8.5 s on.
+- **Document resolution (M1):** on 8 synthetic mentions, the reranker scored the right documents 0.49–0.99 and wrong ones ≤ 0.05.
+- **Document cards (M1):** 21–47 s per document (1.8–5 s per section) with the GPU shared with other work. For the real vault, `vaultmind enrich` wrote **47 cards with 0 failures in 10 min 15 s** (~13 s per document with the GPU to itself): 272 section summaries, none empty; 39 cards in English, 8 in Hebrew.
+- **Key-facts judge (M1):** 29 of 29 facts right on the tuning cases, 8 of 9 held out, stable over 3 runs. **Clarify judge:** 4 of 4.
+
+### Still to measure (M2 on)
+
+M2 (planner + recipes) is built and unit-tested but has not run on the real models. This section will hold (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):
+
+- **The four requests that failed before Phase 5.5** (summarize ×2, list, compare; EXECUTION_PLAN.md) and their Hebrew versions.
 - **Router accuracy** on labeled requests (English and Hebrew).
-- **Task success per type** (list, summarize, compare, extract, transform, multi-step, clarify) from a key-facts judge, averaged over 3 runs.
+- **Task success per type** (list, summarize, compare, extract, transform, multi-step, clarify) from the key-facts judge, averaged over 3 runs (`vaultmind eval tasks --repeat 3`).
+- **Planner cost on lookups:** `plan_p50_ms` and `lookup_route_rate` from `eval run`.
 - **Citation precision:** the share of cited sections that a tool actually read.
-- **Open loop:** valid tool-call rate, steps per task, how often the recipe fallback was used.
+- **Open loop (M3):** valid tool-call rate, steps per task, how often the recipe fallback was used.
 - **Injection through tools:** documents that try to trigger a tool call.
 - **Latency per task type** against the targets: lookup ≤ 2 s, list < 1 s, cached summary < 1 s, new summary first token < 10 s, compare < 15 s, open tasks < 30 s.
-- **Regression gate:** CUAD and personal lookup correctness, abstention and latency must match the Phase 4 default above, within noise.
+- **Regression gate:** CUAD and personal lookup correctness, abstention and latency must match the Phase 4 default above, within noise, with the router on vs. `agent.router: false`.
 
 ## Credits
 

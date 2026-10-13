@@ -53,7 +53,7 @@ Parallel build: contracts and stubs are fixed in `core/models.py` and the module
 
 **Done when:** you can ingest your corpus and get cited answers from the CLI, and re-running `ingest` on an unchanged folder does nothing.
 
-> Status: done. 174 unit tests and 5 live Ollama tests passing; answers take about 2 s on an RTX 5070 Ti. Remaining Phase 0 item: the real test corpus.
+> Status: done. 174 unit tests and 5 live Ollama tests passing at the time; answers took about 2 s on an RTX 5070 Ti.
 
 ## Phase 2: Evaluation harness
 
@@ -97,7 +97,7 @@ Dependencies: `uv add langgraph`
 - [x] **Analyze node** (one structured call): standalone query (resolves chat follow-ups), 2–3 query variants, `needs_retrieval`. (Variants measured: no answer gain, +1.2 s, so `query_variants: 0` by default; analyze then runs only with chat history.)
 - [x] **Retrieve node:** hybrid retrieval for each query variant, fused.
 - [x] **Grade node:** reranker scores against the threshold. No per-chunk LLM calls.
-- [x] **Rewrite node:** given the failed queries and what was found, produce a different query. Stop after `agent.max_rewrites`. (Recovered 0 of 4 rewritten questions, so it's off by default; see the redesign notes in STATUS.md.)
+- [x] **Rewrite node:** given the failed queries and what was found, produce a different query. Stop after `agent.max_rewrites`. (Recovered 0 of 4 rewritten questions, so it's off by default; Phase 5.5 M4 is what could give it a job.)
 - [x] **Generate node:** streamed, cites only graded passages.
 - [x] **Not-found node:** an honest "not in your documents" answer plus the closest matches.
 - [x] Optional **groundedness check** node (config flag, off by default): checks each claim against its cited passage.
@@ -108,7 +108,7 @@ Dependencies: `uv add langgraph`
 
 **Done when:** the loop beats or matches the Phase 3 config on correctness and abstention, and its latency cost is measured.
 
-> Status: done 2026-10-12. The default loop matches the Phase 3 pipeline on correctness and abstention (within judge noise) at about the same latency (~1.5 s median), and adds chat follow-ups, honest not-found answers with no LLM call, the injection guard, optional checks and traces. Variants and rewrites measured no gain and are off by default. Details in RESULTS.md, assessment and redesign notes in STATUS.md.
+> Status: done 2026-10-12. The default loop matches the Phase 3 pipeline on correctness and abstention (within judge noise) at about the same latency (~1.5 s median), and adds chat follow-ups, honest not-found answers with no LLM call, the injection guard, optional checks and traces. Variants and rewrites measured no gain and are off by default. Details in RESULTS.md.
 
 ## Phase 5: Desktop UI + live ingestion
 
@@ -130,7 +130,7 @@ Dependencies: `uv add "nicegui[native]" watchdog psutil`
 
 **Done when:** a new user can drop files in, watch them index, ask a question, and inspect the trace without touching the CLI.
 
-> Status (2026-10-12): built and merged; the app runs on the real vault with the real models. Opens as a browser tab by default (the native window's WebView2 contacts Microsoft by itself, see STATUS.md). Other websites are refused (Host/Origin check against DNS rebinding). Not yet walked through by hand.
+> Status (2026-10-12): built and merged; the app runs on the real vault with the real models (live numbers in RESULTS.md). Opens as a browser tab by default (the native window's WebView2 contacts Microsoft by itself; see the decisions in STATUS.md). Other websites are refused (Host/Origin check against DNS rebinding). Hand walkthrough: only the chat page so far.
 
 ### Parallel build (two waves)
 
@@ -159,15 +159,26 @@ Rules for the UI: always `ui.run(host="127.0.0.1", reload=False, show_welcome_me
 
 ## Phase 5.5: From search pipeline to document agent
 
-Goal: VaultMind understands what was asked and does it, the way a cloud assistant like Gemini works over your files, but fully local. Found in the first hand test (2026-10-12): "summarize X", "what documents do I have" and "compare X and Y" all fail, because every message goes through search → top 5 passages → answer (details in STATUS.md). This phase comes before hardening.
+Goal: VaultMind understands what was asked and does it, the way a cloud assistant like Gemini works over your files, but fully local. This phase comes before hardening: it's what the product is supposed to be.
 
-### Why the current agent can't do it
+Found by the user in the first hand test, live with the real models (2026-10-12):
 
-- **No task understanding.** Every message takes the lookup path. Analyze is skipped on a chat's first message and, when it runs, only rewrites the question.
-- **No tools.** It can't see the file list, read a whole document, or search inside one file.
-- **No working memory.** "Summarize *it*" or "make that shorter" search again instead of using what it just read or wrote.
-- **No multi-step work.** Compare, extract-across-files and "find X, then check Y" are out of reach.
-- **No idea what a document is about as a whole.** "Which document covers X" fails.
+| Request | Result |
+|---|---|
+| "Summarize the Workato Recipe Design Worksheet" | "I couldn't find this in your documents." |
+| "Summarize the AI in the workplace syllabus" | A "summary" of the title page only (it read one 256-token chunk) |
+| "What documents do I have?" | "I couldn't find this in your documents." |
+| "Compare the Solution Design Checklist with the Recipe Design Worksheet" | "I couldn't find this in your documents." |
+
+Every message took the same path: search, keep the top 5 small passages that pass the reranker threshold, answer only from those. That fits lookups ("what is the deadline") and nothing else; a request like "summarize X" even scores low against every single passage, so grading drops it to "not found".
+
+### What the Phase 4 agent lacked
+
+- **No task understanding.** Every message took the lookup path. Analyze was skipped on a chat's first message and, when it ran, only rewrote the question.
+- **No tools.** It couldn't see the file list, read a whole document, or search inside one file.
+- **No working memory.** "Summarize *it*" or "make that shorter" searched again instead of using what it just read or wrote.
+- **No multi-step work.** Compare, extract-across-files and "find X, then check Y" were out of reach.
+- **No idea what a document is about as a whole.** "Which document covers X" failed.
 
 ### Target capabilities
 
@@ -234,9 +245,9 @@ user message
 7. **Open ReAct loop.** Ollama's native `tools=` with qwen3, thinking on for these steps only (`agent.think_open`). Every call is traced. An invalid call gets one repair retry with the validation error, then the closest recipe takes over.
 8. **Human-in-the-loop.** LangGraph `interrupt()` with a local SQLite checkpointer. Three cases: clarify which document was meant (the common one); confirm expensive jobs ("summarize all 12 files, ~3 min?"); approve any write. A rejection goes back to the reasoning step as feedback. `Engine.ask` becomes resumable: it yields an approval/clarify event and `Engine.resume(chat_id, decision)` continues the run.
 9. **Respond.** Citations must point to text a tool actually read. The groundedness check runs on long synthesized answers. "Not found" stays for lookups and for documents that don't exist.
-10. **Retrieval upgrades** (STATUS redesign ideas 1–2): grade each passage by its best score over the question's phrasings; translate the query into the document's language; split two-part questions; a second pass when the model refuses although graded passages exist.
+10. **Retrieval upgrades.** Today every passage is scored against the single standalone question, which is why rewrites and variants can't help: a better query finds new candidates, but the right passage is still scored against the original wording. So: grade each passage by its best score over the question's phrasings; translate a cross-lingual query into the document's language; split two-part questions into sub-questions graded separately. On the generation side, where most remaining CUAD errors are (refusals with the right passage in context): a cheap second pass only when the model abstains although graded passages exist ("does any passage address this in other words?"), or a less literal answer prompt. Measure abstention on unanswerable questions alongside it.
 
-Contract changes (fixed on `main` before agents start): `LLM.chat(messages, tools) -> AssistantTurn(content, tool_calls)` and a `tool` message role in `core/providers.py` (the fake LLM plays back scripted tool calls); `Task`, `Plan`, `ToolCall`, `ToolResult`, `DocCard` types; trace keys for the new nodes in `agent/types.py`; every switch in `core/config.py` + `config/default.yaml`.
+Contract changes (fixed on `main` before agents start): `LLM.chat(messages, tools) -> AssistantTurn(content, tool_calls)` and a `tool` message role in `core/providers.py` (the fake LLM plays back scripted tool calls); `TaskKind`, `Plan`, `ToolCall`, `ToolResult`, `DocCard` types; trace keys for the new nodes in `agent/types.py`; every switch in `core/config.py` + `config/default.yaml`.
 
 Dependencies: `uv add langgraph-checkpoint-sqlite` (local SQLite checkpointer for human-in-the-loop). No other new packages; no new model downloads unless `qwen3:4b` is adopted.
 
@@ -244,18 +255,18 @@ Dependencies: `uv add langgraph-checkpoint-sqlite` (local SQLite checkpointer fo
 
 - [x] **Decisions (user, 2026-10-12):** (1) summaries, comparisons, extractions and generated material cite the sections and pages they read; lookups keep the graded-passage rule and "not found" (in `CLAUDE.md`). (2) General knowledge: a clearly labeled local world-knowledge mode as a switch, off by default (`agent.world_knowledge`). (3) Document cards at ingest: on, as a switch (`ingest.enrich`).
 - [x] **M0: contracts on `main`.** Provider tool-call protocol + fake, types, config switches, trace keys, checkpointer, `tasks.jsonl` format, stub signatures, agent prompts in `scripts/agents/prompts/` (and the new shared files and dependency in `_rules.md`). Done 2026-10-12: `LLM.chat` checked live with `qwen3:14b` (a correct native tool call in 0.3 s with thinking off, 2.1 s on); `CardStore` (migration 4) and `ChunkIndex.parents_for_file` implemented; stubs `ingest/enrich.py`, `agent/catalog.py`, `agent/tools.py`, `agent/gateway.py`; prompts `cards.md`, `tools.md`, `taskeval.md`.
-- [x] **M1: foundations, three agents in parallel.** (a) Document cards at ingest + card store; (b) tools + gateway; (c) `tasks.jsonl` + key-facts judge + `eval run --repeat N` + router labels. Merged 2026-10-13; numbers in STATUS.md.
+- [x] **M1: foundations, three agents in parallel.** (a) Document cards at ingest + card store; (b) tools + gateway; (c) `tasks.jsonl` + key-facts judge + `eval run --repeat N` + router labels. Merged 2026-10-13; numbers in RESULTS.md, cards built for the real vault (47).
 - [ ] **M2: planner, recipes, transform.** Wired into the graph with the lookup path untouched. *Code and unit tests done 2026-10-13 (`agent/planner.py`, `agent/recipes.py`, `eval/task_runner.py`, `vaultmind eval tasks`). Tick it once the "done when" check below passes on the real models (steps in STATUS.md).*
 - [ ] **M3: ReAct loop, human-in-the-loop, verify.**
 - [ ] **M4: retrieval upgrades** (component 10), each measured on CUAD and personal.
 - [ ] **M5: UI.** A live step list ("Reading Syllabus, pp. 1–12…"), approval and clarify cards, Summarize / Quiz me per file in the Library, the route and tool calls in the trace panel, section chips on summary answers, memory in Settings.
-- [ ] **Eval:** ~60 task items, half in Hebrew: list 5, summarize 10, compare 8, extract 8, transform 8, multi-step 15, ambiguous (should clarify) 6. Metrics: router accuracy, task success (key-facts judge, 3 repeats), citation precision, valid tool-call rate, steps per task, latency per task type, injection items where a document tries to trigger a tool call. CUAD and personal lookup numbers must hold within noise.
+- [ ] **Eval:** ~60 task items, half in Hebrew: list 5, summarize 10, compare 8, extract 8, transform 8, multi-step 15, ambiguous (should clarify) 6. Metrics: router accuracy, task success (key-facts judge, 3 repeats), citation precision, valid tool-call rate, steps per task, latency per task type, injection items where a document tries to trigger a tool call. CUAD and personal lookup numbers must hold within noise. *The set exists (63 items, 31 in Hebrew, gitignored; awaiting the user's review). `eval tasks` (M2) reports router accuracy, task success, clarify accuracy, forbidden rate and latency per task; citation precision, valid tool-call rate and steps come with M3.*
 
 | Milestone | Done when |
 |---|---|
 | M0 | Tests and mypy green with fakes |
 | M1 | Each part has unit tests; cards built for the real vault |
-| M2 | The four failing requests in STATUS (and their Hebrew versions) get correct, cited answers; lookups within noise |
+| M2 | The four failing requests above (and their Hebrew versions) get correct, cited answers; lookups within noise |
 | M3 | Multi-step set measured (success, steps, valid-call rate); approve / reject / clarify work end to end |
 | M4 | Cross-lingual and two-part items improve; CUAD abstention holds |
 | M5 | The hand walkthrough passes |
@@ -275,7 +286,8 @@ Dependencies: `uv add --dev pytest-socket`
 - [ ] Edge cases: scanned PDFs (no text layer → flag the file, don't fail silently), encrypted PDFs, empty or huge files, non-UTF-8 text, and files that change during indexing.
 - [ ] Performance: batched embedding, and measure ingestion throughput (pages/sec).
 - [ ] Resilience: if Ollama goes down mid-session, show a clear message and recover. Interrupted ingestion jobs resume after a restart.
-- [ ] **Secret / PII scanner at ingest** (config: `ingest.secret_scan: off | flag | mask | exclude`): local regex patterns for API keys and tokens, private keys, passwords in config-like lines, card numbers (Luhn-checked), emails, phone and ID numbers. Matches are recorded per file in the registry and shown in the Library with a lock icon. The same pass flags prompt-injection patterns for Phase 4. No model, no network.
+- [ ] **Secret / PII scanner at ingest** (config: `ingest.secret_scan: off | flag | mask | exclude`): local regex patterns for API keys and tokens, private keys, passwords in config-like lines, card numbers (Luhn-checked), emails, phone and ID numbers. Matches are recorded per file in the registry and shown in the Library with a lock icon. The same pass flags prompt-injection patterns, reusing `guard.INJECTION_PATTERNS`. No model, no network.
+- [ ] **Decide on OCR** for scanned and handwritten PDFs: it needs a new dependency and a model download (explicit setup step), and offline Hebrew handwriting OCR is weak.
 - [ ] Integration test pass on the full corpus.
 - [ ] **Launch token:** a secret generated at each `vaultmind ui` start, required by the server (cookie set from the opening URL), so other programs on the machine can't use the app. The Host/Origin check (Phase 5) already stops other websites.
 - [ ] **Index consistency:** re-indexing a file swaps its chunks atomically (today a question asked between the delete and the add can miss the file).
@@ -309,7 +321,7 @@ Ruled out: **MCP** (as client or server). A client would let third-party tool se
 | torch on RTX 50 (Blackwell) requires CUDA 12.8+ builds | Install from the cu128+ index; fall back to CPU or an ONNX reranker if needed |
 | PDF parsing quality (tables, multi-column, scans) | Include hard PDFs in the corpus from day 1; Docling as an optional parser |
 | **PyMuPDF is AGPL-3.0** | Fine for an open-source repo. Before distributing a bundled binary, switch to `pypdfium2` (Apache/BSD) or Docling (MIT) behind the same parser interface |
-| 14B model too slow for a responsive chat | Benchmark 8B vs. 14B in the eval; 8B for analyze/rewrite, 14B for generation |
+| 14B model too slow for a responsive chat | Benchmark 8B vs. 14B in the eval; a smaller model (`qwen3:4b` or `8b`) for the side calls (analyze, rewrite, the checks, maybe the planner), which would make variants and the groundedness check affordable; 14B for generation |
 | Indexed documents contain prompt-injection text | Passages are delimited as data, flagged at ingest, and measured with `injection` eval items (Phases 2, 4, 6) |
 | An LLM judge for correctness is noisy | Spot-check by hand; report retrieval metrics, which are deterministic, as the headline numbers |
 | A 14B local model makes unreliable tool calls | Lookups and common tasks never go through the open loop (fast paths + recipes); schema-validated arguments, one repair retry, then the closest recipe |

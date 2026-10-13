@@ -1,1 +1,1 @@
-"""Shared foundations: configuration and model provider interfaces."""
+"""Shared foundations: configuration, data contracts and the model providers."""

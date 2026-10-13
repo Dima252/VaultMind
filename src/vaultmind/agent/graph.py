@@ -2,8 +2,9 @@
 
 With the router on (`agent.router`, Phase 5.5) a planner call routes every message first:
 lookup -> the corrective graph below; chat -> direct; transform -> respond; list, summarize,
-compare, extract, generate and open -> recipe -> respond; an unclear request -> human (a
-clarifying question); a named document that isn't there -> not_found.
+compare, extract, generate and open -> recipe -> respond (an open request that names no
+document is a lookup); an unclear request -> human (a clarifying question); a named document
+that isn't there -> not_found.
 
 The corrective graph (Phase 4): analyze -> retrieve -> grade -> (generate | rewrite ->
 retrieve ... | not_found), with optional contradiction and groundedness checks. Grading uses

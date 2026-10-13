@@ -123,7 +123,6 @@ class _ChatPage:
 
     def _select(self, chat_id: str | None) -> None:
         self.chat_id = chat_id
-        app.storage.client[_OPEN_CHAT] = chat_id or ""
         self._show_chat()
 
     def _show_chat(self) -> None:
@@ -477,7 +476,7 @@ def _filename(title: str, ext: str) -> str:
     return f"{name}.{ext}"
 
 
-def _download_md(markdown: str, title: str = "answer") -> None:
+def _download_md(markdown: str, title: str) -> None:
     ui.download(markdown.encode("utf-8"), _filename(title, "md"), "text/markdown")
 
 

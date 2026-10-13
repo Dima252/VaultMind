@@ -1,3 +1,8 @@
-# Loop with the prompt-injection guard off.
+# loop_variants_rewrite.yaml with the prompt-injection guard off.
 agent:
+  query_variants: 2
+  rewrite: true
   injection_guard: false
+  detect_contradictions: false
+  smalltalk: false
+  router: false

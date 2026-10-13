@@ -1,4 +1,4 @@
-"""Document cards: what each indexed file is about as a whole (Phase 5.5, M1).
+"""Document cards: what each indexed file is about as a whole.
 
 After a file is indexed, a background worker reads its parent sections and asks the LLM for a
 card (`core/models.DocCard`): a 1-2 sentence summary per section, then one call over those for

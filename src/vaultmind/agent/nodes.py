@@ -8,7 +8,6 @@ LangGraph's stream writer as it is produced.
 
 from __future__ import annotations
 
-import json
 import operator
 import time
 from dataclasses import asdict, dataclass, replace
@@ -24,6 +23,7 @@ from vaultmind.agent.checks import CheckError, check_groundedness, detect_contra
 from vaultmind.agent.gateway import Gateway
 from vaultmind.agent.guard import build_answer_messages, find_injections
 from vaultmind.agent.retrieval import candidates, rerank, rrf_fuse
+from vaultmind.agent.text import clean, parse_json
 from vaultmind.agent.tools import ToolContext
 from vaultmind.agent.types import (
     AgentResult,
@@ -242,11 +242,8 @@ def recipe(state: AgentState, deps: Deps) -> Update:
         events.append(_tool_event(result))
         return result
 
-    task = p.task
-    gathered = recipes.run(
-        task, p, state["question"], gateway=gateway, catalog=deps.catalog, call=call
-    )
-    data = {"name": task, "documents": gathered.documents}
+    gathered = recipes.run(p, state["question"], gateway=gateway, catalog=deps.catalog, call=call)
+    data = {"name": p.task, "documents": gathered.documents}
     return {"gathered": gathered, "trace": [*events, _event("recipe", start, data)]}
 
 
@@ -254,11 +251,12 @@ def respond(state: AgentState, deps: Deps) -> Update:
     """The answer to a recipe or a transform, streamed, citing the sections a tool read."""
     start = time.perf_counter()
     p = state["plan"]
-    task = p.task if p is not None else "transform"
+    if p is None:
+        raise ValueError("respond needs a plan")
     history = state["history"][-RESPOND_HISTORY_TURNS:]
     gathered = state["gathered"]
     sources: list[Source] = []
-    if task == "transform":
+    if p.task == "transform":
         sources = state["previous_sources"]
         messages: list[Message] = [
             {"role": "system", "content": TRANSFORM_SYSTEM},
@@ -274,13 +272,11 @@ def respond(state: AgentState, deps: Deps) -> Update:
         get_stream_writer()(answer)
     else:
         sources = gathered.sources()
-        messages = recipes.respond_messages(
-            task, p or Plan(task="open"), state["question"], gathered, sources, history
-        )
+        messages = recipes.respond_messages(p, state["question"], gathered, sources, history)
         answer = _stream(deps.llm, messages)
     sources = _flag(sources, deps.cfg)
     abstained = is_abstention(answer)
-    data = {"task": task, "sources": [s.n for s in sources]}
+    data = {"task": p.task, "sources": [s.n for s in sources]}
     return {
         "answer": answer,
         "abstained": abstained,
@@ -301,13 +297,13 @@ def analyze(state: AgentState, deps: Deps) -> Update:
         data["skipped"] = True  # nothing to resolve and nothing to vary
     else:
         try:
-            parsed = _parse_json(
+            parsed = parse_json(
                 deps.llm.generate(
                     _analyze_messages(state, n_variants), schema=_analyze_schema(n_variants)
                 )
             )
             if history:  # without history the question already stands alone; keep it verbatim
-                standalone = _text(parsed.get("standalone_query")) or question
+                standalone = clean(parsed.get("standalone_query")) or question
             variants = _variants(parsed.get("variants"), standalone, n_variants)
             needs_retrieval = parsed.get("needs_retrieval") is not False
             analyzed = True
@@ -342,10 +338,7 @@ def direct(state: AgentState, deps: Deps) -> Update:
     searched = bool(state["queries"])
     closest: list[Source] = []
     if abstained and searched:
-        closest = to_sources(
-            state["closest"][:CLOSEST_MATCHES], deps.cfg, index=deps.index, registry=deps.registry
-        )
-        closest = _flag(closest, deps.cfg)
+        closest = _closest(state, deps)
     reason = SMALLTALK_REASON if searched else DIRECT_REASON
     if state["plan"] is not None and state["plan"].task == "chat":
         reason = CHAT_REASON
@@ -420,10 +413,10 @@ def rewrite(state: AgentState, deps: Deps) -> Update:
     data: dict[str, Any] = {"attempt": attempt}
     query, stop = "", False
     try:
-        parsed = _parse_json(
+        parsed = parse_json(
             deps.llm.generate(_rewrite_messages(state, deps), schema=REWRITE_SCHEMA)
         )
-        query = _text(parsed.get("query"))
+        query = clean(parsed.get("query"))
         if not query:
             raise ValueError("empty query")
     except ValueError as e:
@@ -474,10 +467,7 @@ def generate(state: AgentState, deps: Deps) -> Update:
 def not_found(state: AgentState, deps: Deps) -> Update:
     """The honest not-found answer, with the closest matches as sources."""
     start = time.perf_counter()
-    closest = to_sources(
-        state["closest"][:CLOSEST_MATCHES], deps.cfg, index=deps.index, registry=deps.registry
-    )
-    closest = _flag(closest, deps.cfg)
+    closest = _closest(state, deps)
     answer = NOT_FOUND
     if state["missing"]:
         names = ", ".join(f'"{m}"' for m in state["missing"])
@@ -661,6 +651,12 @@ def _flag(sources: list[Source], cfg: Config) -> list[Source]:
     return [replace(s, warnings=tuple(find_injections(s.text))) for s in sources]
 
 
+def _closest(state: AgentState, deps: Deps) -> list[Source]:
+    """The best failing hits as sources, shown with a not-found answer."""
+    hits = state["closest"][:CLOSEST_MATCHES]
+    return _flag(to_sources(hits, deps.cfg, index=deps.index, registry=deps.registry), deps.cfg)
+
+
 def _best(previous: list[SearchHit], failed: list[SearchHit]) -> list[SearchHit]:
     """Best failing hits across rounds, one per chunk, best first."""
     best: dict[str, SearchHit] = {}
@@ -687,21 +683,6 @@ class _Labels:
         return Source(0, self._paths[file_id], chunk.page, chunk.section_path, "", 0.0).label
 
 
-def _parse_json(text: str) -> dict[str, Any]:
-    """The JSON object in `text`; ValueError when there is none."""
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("no JSON object")
-    parsed = json.loads(text[start : end + 1])  # JSONDecodeError is a ValueError
-    if not isinstance(parsed, dict):
-        raise ValueError("not a JSON object")
-    return parsed
-
-
-def _text(value: object) -> str:
-    return " ".join(value.split()) if isinstance(value, str) else ""
-
-
 def _norm(query: str) -> str:
     return " ".join(query.lower().split())
 
@@ -713,7 +694,7 @@ def _variants(value: object, standalone: str, limit: int) -> list[str]:
     seen = {_norm(standalone)}
     variants: list[str] = []
     for item in value:
-        text = _text(item)
+        text = clean(item)
         if text and _norm(text) not in seen:
             seen.add(_norm(text))
             variants.append(text)

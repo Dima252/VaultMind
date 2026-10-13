@@ -1,1 +1,1 @@
-"""Document ingestion: folder watching, parsing, chunking, embedding (Phase 1)."""
+"""Document ingestion: parsing, chunking, embedding, folder watching and document cards."""

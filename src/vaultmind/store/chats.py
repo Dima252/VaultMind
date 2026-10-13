@@ -1,6 +1,6 @@
 """Chat history in the app database (`chats`, `messages` tables).
 
-The schema lives in `store/registry.py` (migration 3); opening a ChatStore applies `migrate`.
+The schema lives in `store/registry.py` (migration 3), applied when a ChatStore opens.
 An assistant message keeps everything needed to show it again without re-running the agent:
 its sources (numbered as the answer cites them), abstention, contradictions, unsupported claims,
 and the id of its stored run (`store/traces.py`) for the trace.
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import threading
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -20,7 +19,7 @@ from typing import Any, Literal, cast
 from vaultmind.agent.baseline import Source
 from vaultmind.agent.types import AgentResult, Contradiction, UnsupportedClaim
 from vaultmind.core.providers import Message
-from vaultmind.store.registry import migrate
+from vaultmind.store.registry import SqliteStore
 
 Role = Literal["user", "assistant"]
 DEFAULT_TITLE = "New chat"
@@ -52,27 +51,7 @@ class ChatMessage:
     unsupported: tuple[UnsupportedClaim, ...] = ()
 
 
-class ChatStore:
-    def __init__(self, db_path: Path) -> None:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._conn: sqlite3.Connection | None = sqlite3.connect(
-            db_path, check_same_thread=False, isolation_level=None
-        )
-        self._conn.row_factory = sqlite3.Row
-        try:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys=ON")
-            migrate(self._conn)
-        except BaseException:
-            self.close()
-            raise
-
-    def _db(self) -> sqlite3.Connection:
-        if self._conn is None:
-            raise RuntimeError("chat store is closed")
-        return self._conn
-
+class ChatStore(SqliteStore):
     def create(self, title: str = DEFAULT_TITLE) -> Chat:
         now = datetime.now(UTC)
         chat = Chat(id=uuid.uuid4().hex, title=title, created_at=now, updated_at=now)
@@ -199,13 +178,6 @@ class ChatStore:
                 .fetchall()
             )
         return [{"role": cast(Role, r["role"]), "content": r["content"]} for r in rows]
-
-    def close(self) -> None:
-        """Idempotent."""
-        with self._lock:
-            if self._conn is not None:
-                self._conn.close()
-                self._conn = None
 
 
 def _title_from(question: str) -> str:

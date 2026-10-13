@@ -8,9 +8,6 @@ from __future__ import annotations
 
 import base64
 import html
-import os
-import subprocess
-import sys
 import tempfile
 import uuid
 from collections.abc import Callable
@@ -25,6 +22,7 @@ from vaultmind.app.highlight import (
     highlighted_pdf_copy,
     render_pdf_citation,
 )
+from vaultmind.ui.library import open_with_os
 from vaultmind.ui.state import state
 
 _TEXT_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
@@ -140,7 +138,7 @@ class _PdfView:
         try:
             copy = await run.io_bound(_highlighted_copy, self.path, page, self.source.text)
             if copy is not None:  # None: the app is shutting down
-                _open_with_system(copy)
+                open_with_os(copy)
         except Exception as e:
             ui.notify(f"Couldn't open {self.path.name}: {e or type(e).__name__}", type="negative")
 
@@ -151,16 +149,6 @@ def _highlighted_copy(pdf: Path, page: int, passage: str) -> Path:
     # A folder per copy: a viewer may still hold the previous copy open (and locked).
     out_dir = Path(tempfile.mkdtemp(prefix="cite-", dir=tmp))
     return highlighted_pdf_copy(pdf, page, passage, out_dir)
-
-
-def _open_with_system(path: Path) -> None:
-    """Open a file with the OS default app, without waiting for it."""
-    if sys.platform == "win32":
-        os.startfile(path)
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(path)])
-    else:
-        subprocess.Popen(["xdg-open", str(path)])
 
 
 # --- Markdown / text ---------------------------------------------------------------------
@@ -228,6 +216,6 @@ def _text_with_mark(path: Path, text: str, span: tuple[int, int], mark_id: str) 
 
 def _open_file(path: Path) -> None:
     try:
-        _open_with_system(path)
+        open_with_os(path)
     except OSError as e:
         ui.notify(f"Couldn't open {path.name}: {e.strerror or e}", type="negative")

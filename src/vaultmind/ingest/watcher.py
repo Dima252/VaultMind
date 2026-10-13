@@ -118,22 +118,22 @@ class VaultWatcher:
             self._removed(src)
             if event.is_directory:
                 if self._inside(dest) and not self._ignored(dest):
-                    self._schedule(dest, fresh=True)
+                    self._schedule(dest)
             elif self._wanted(dest):
                 self._schedule(dest, fresh=True)
         elif isinstance(event, FileDeletedEvent | DirDeletedEvent):
             # On Windows a deleted folder arrives as one FileDeletedEvent: forget handles both.
             self._removed(src)
-        elif isinstance(event, FileCreatedEvent):
-            if self._wanted(src):
-                self._schedule(src, fresh=True)
-        elif isinstance(event, FileModifiedEvent | FileClosedEvent):
+        elif isinstance(event, FileCreatedEvent | FileModifiedEvent | FileClosedEvent):
+            # Created goes through the stamp check too (a delete already dropped the old stamp):
+            # macOS FSEvents replays the creation of files written just before the watch started.
             if self._wanted(src):
                 self._schedule(src)
         elif isinstance(event, DirCreatedEvent):
             # A folder moved in from outside the vault; its files may not get events of their own.
-            if self._inside(src) and not self._ignored(src):
-                self._schedule(src, fresh=True)
+            # Not the root itself: FSEvents also replays the creation of a freshly made root.
+            if self._inside(src) and not self._ignored(src) and _norm(src) != _norm(self._root):
+                self._schedule(src)
 
     def _removed(self, path: Path) -> None:
         if not self._inside(path) or self._ignored(path):
@@ -144,9 +144,7 @@ class VaultWatcher:
     # -- filters --
 
     def _inside(self, path: Path) -> bool:
-        resolved = _norm(path)
-        root = _norm(self._root)
-        return resolved == root or resolved.is_relative_to(root)
+        return _norm(path).is_relative_to(_norm(self._root))
 
     def _ignored(self, path: Path) -> bool:
         """Hidden (any part under root starts with '.') or an editor/download temp file."""
@@ -169,7 +167,8 @@ class VaultWatcher:
     # -- debounce --
 
     def _schedule(self, path: Path, *, fresh: bool = False) -> None:
-        """Submit `path` after `debounce_s` of quiet. `fresh`: new at this path, always submit."""
+        """Submit `path` after `debounce_s` of quiet. `fresh`: a file moved to this path, so
+        submit it even when its (mtime, size) matches what was there before."""
         key = _key(path)
         with self._lock:
             if self._stopped:
