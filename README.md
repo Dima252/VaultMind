@@ -63,15 +63,17 @@ The loop is a [LangGraph](https://github.com/langchain-ai/langgraph) state machi
 
 ### Roadmap: from search to document agent
 
-Until Phase 5.5 every message was a lookup: search, keep the best passages, answer. That's why "summarize this document", "what documents do I have?" and "compare X with Y" failed. Phase 5.5 turns VaultMind into a local document agent: a ReAct loop with human-in-the-loop, behind fast paths so simple questions stay fast.
+Until Phase 5.5 every message was a lookup: search, keep the best passages, answer. That's why "summarize this document", "what documents do I have?" and "compare X with Y" failed. Phase 5.5 turns VaultMind into a local document agent. A planner decides what a message needs, and lookups keep the measured corrective loop. Document tasks read the documents you name: whole when they fit the local context window, otherwise as notes taken for your request.
 
 ```mermaid
 flowchart TD
     Q[Message + chat memory<br/>focus documents, earlier results] --> P[Plan and route<br/>task, documents, short plan]
     P -- chat / rework last answer --> R
     P -- lookup --> L[Corrective RAG<br/>today's loop, unchanged] --> R
-    P -- list / summarize / compare / extract --> C[Recipe<br/>fixed tool sequence] --> R
-    P -- open, multi-step --> T[Reason<br/>local tool calls]
+    P -- list --> K[Your document catalog] --> R
+    P -- summarize / compare / extract / generate --> C[Read the documents named<br/>whole, or notes for the request] --> R
+    P -- needs a calculation --> N[Calculator<br/>calc, date_diff] --> R
+    P -. open, multi-step: planned .-> T[Reason<br/>local tool calls]
     T --> G[Tool gateway<br/>validate, resolve documents, budget, guard]
     G -- read-only --> X[Run tool]
     G -- write or expensive --> H[Ask you<br/>approve / edit / reject]
@@ -83,9 +85,13 @@ flowchart TD
 
 Where it stands:
 
-- **Built:** document cards at ingest (built for a real 47-file vault), so the agent knows your library and can work with whole documents within a local context window; local read-only tools (list documents, outline, read pages or sections, search one file, summarize, extract into a table, calculate), all plain Python over the local index behind a validating gateway; the planner and the recipes for list, summarize, compare, extract and generate; a task eval set (63 items, half Hebrew).
-- **Next:** checking the planner and recipes against the real models and measuring them (router accuracy, task success, latency), with lookup quality and latency held where they are.
-- **Then:** the open reasoning loop for multi-step tasks; asking you before long jobs and before any write (writes need your approval, and the agent has no delete tool); retrieval upgrades for cross-lingual and two-part questions; a live step list in the app.
+- **Built and measured:**
+  - **What it knows about your files:** a card for each document, built at ingest (47 files in the real vault), which gives the agent your catalog.
+  - **Tools:** local read-only tools behind a validating gateway: list, outline, read, search one file, notes for a request, extract, calculate.
+  - **The agent:** the planner, the document tasks (list, summarize, compare, extract, generate), and a calculator phase for answers that need arithmetic or date counting.
+  - **Results:** on a 63-item task set (half Hebrew), task success went from 0.45 to 0.60 while lookup quality held.
+- **Next:** making the planner faster (it adds ~2 s to every message); clarifying questions you can answer mid-run; deciding whether an open multi-step loop is still needed.
+- **Then:** asking before long jobs and before any write (writes need your approval, and the agent has no delete tool); retrieval upgrades for cross-lingual and two-part questions; a live step list in the app.
 
 Details and milestones: [execution plan, Phase 5.5](docs/EXECUTION_PLAN.md).
 
@@ -152,9 +158,21 @@ Current numbers (RTX 5070 Ti, `qwen3:14b`) on a 25-contract subset of [CUAD](htt
 | CUAD: answer correctness (LLM judge, ±5 points) | ~0.64 | ~0.80 |
 | CUAD: abstention accuracy | ~0.75 | ~0.85 |
 | Planted prompt injections resisted | 6/8 | 8/8 (40/40 in a targeted test) |
-| Median time to a full answer | 1.4 s | 1.5 s |
+| Median time to a full answer (lookup) | 1.4 s | 1.5 s (3.5 s with the Phase 5.5 planner) |
 
-What helped most was retrieval: hybrid search plus a cross-encoder reranker. The agent's query rewriting didn't help on these datasets, and the write-up says so. These are lookup numbers; the document tasks (summarize, compare, ...) get their own eval (`vaultmind eval tasks`: router accuracy, task success, latency per task), not run on the real models yet.
+What helped most was retrieval: hybrid search plus a cross-encoder reranker. The agent's query rewriting didn't help on these datasets, and the write-up says so. These are lookup numbers. Document tasks have their own eval (`vaultmind eval tasks`, 63 requests over the author's documents, half in Hebrew, graded on the key facts each answer should contain):
+
+| Document tasks (3 runs each) | First version (M2) | Today |
+|---|---:|---:|
+| Task success | 0.45 | 0.60 |
+| Share of expected facts in the answer | 0.53 | 0.69 |
+| Summarize | 3.3/10 | 7.0/10 |
+| Compare | 1.7/8 | 4.3/8 |
+| Extract into a table | 2.0/8 | 4.7/8 |
+| Questions that need a calculation | 5.7/15 | 6.3/15 |
+| Planted instructions repeated in answers | 0 | 0 |
+
+The biggest gain came from reading the documents themselves instead of their short summary cards. The weak spot is calculation questions the planner doesn't recognize as calculations.
 
 The pipeline is measured against a test set of questions with known source passages, including questions whose answer is deliberately absent from the documents:
 

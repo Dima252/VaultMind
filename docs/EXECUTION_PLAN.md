@@ -309,11 +309,13 @@ Cards stay, but only for the catalog, resolving documents and "which document co
 
 5. **Human-in-the-loop** (from M3, unchanged in scope): clarify as a LangGraph `interrupt()` with the SQLite checkpointer; `Engine.ask` yields a clarify/confirm event and `Engine.resume(chat_id, decision)` continues. Confirm expensive jobs (map-reduce over many documents). Approval for writes is built when the first write tool (`save_note`) is.
 
-6. **Decide on the open ReAct loop.** Read the multi-step items that still fail after step 4. Build the bounded loop (`agent.think_open`, repair retry, fall back to the documents path) only if they fail because the model had to find something first and then read it. Otherwise it moves to "Later" with that reason.
+6. **Decide on the open ReAct loop.** *Read 2026-10-14: of the open items still failing, only open-09 (page counts: file metadata) and open-10 (two facts from two places) are loop-shaped; the rest are calculations the planner doesn't flag (step 4) or a fact the answer overlooked. Recommendation: move the loop to "Later"; the user decides.* Read the multi-step items that still fail after step 4. Build the bounded loop (`agent.think_open`, repair retry, fall back to the documents path) only if they fail because the model had to find something first and then read it. Otherwise it moves to "Later" with that reason.
 
 7. **Recorded runs and docs.** Run `eval tasks --repeat 3` and the lookup regression (`eval run -d cuad -d personal -c config/default.yaml -c eval/configs/router_off.yaml --repeat 3`), and record both in RESULTS.md. Update `CLAUDE.md` ("Fast paths before the tool loop": recipes become context paths), the decisions in STATUS.md, and this section (mark what was adopted). Then tick M2 and M3.
 
 **Not changing:** the lookup graph and its numbers, LangGraph, cards at ingest, the gateway (validation, guard, repeat cache), citations to sections and pages actually read, "not found" for documents that don't exist, and the latency targets below.
+
+**Status (2026-10-14, late):** steps 0-4 done and committed, task success 0.450 → 0.598, lookup regression passes. Pending decisions for the user: the calc phase on every answer (step 4), the open loop (step 6), and planner latency (lookups ~3.5 s against the 2 s target below; the planner is ~1.8 s of it). Then steps 5 and 7. Numbers in RESULTS.md, handoff in STATUS.md.
 
 **Not split across agents:** each step depends on the previous step's measurement, and steps 1–4 all touch `recipes.py`, `nodes.py` and the planner. Run it as one sequence on `main`, committing after each gate.
 
@@ -337,7 +339,7 @@ Cards stay, but only for the catalog, resolving documents and "which document co
 | M4 | Cross-lingual and two-part items improve; CUAD abstention holds |
 | M5 | The hand walkthrough passes |
 
-Latency targets: lookup ≤ 2 s (1.5 s today); list < 1 s; cached summary < 1 s; new summary first token < 10 s; compare < 15 s; open tasks < 30 s with steps shown live.
+Latency targets: lookup ≤ 2 s (1.5 s today); list < 1 s; cached summary < 1 s; new summary first token < 10 s; compare < 15 s; open tasks < 30 s with steps shown live. *Measured 2026-10-14 after course correction step 4 (p50): lookup ~3.5 s (planner ~1.8 s; missed), list ~1.9 s (missed), summary ~6.2 s to the full answer, compare ~8-10 s, extract ~6.8 s, open ~4.5 s.*
 
 **Done when:** M0–M5 are done; the router, each task type and the open loop have measured numbers in RESULTS.md; lookup quality and latency hold.
 

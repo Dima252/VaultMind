@@ -305,6 +305,28 @@ What the numbers say: routing and safety improved; answer quality on whole-docum
 - **Rerank threshold vs. field queries.** Real scores of one-word extract fields against the passage that holds them: "parties" 0.29, "date" 0.45, "warranty" 0.04, "governing law" 0.16; a Hebrew field ("רכיבי הציון") 0.001 against the Hebrew syllabus. Unrelated queries score ≤ 0.004. Extract no longer thresholds; scoped search falls back to its best 3 passages above 0.05.
 - **Ollama.** One guarded generation ran 42 min 58 s (~14.6k tokens, context shifted) before `models.max_answer_tokens`; the model runner crashed with a connection reset 3 times in ~4 hours of eval load.
 
+### Course correction summary: where the document agent stands (2026-10-14)
+
+The sections below measure each step on its own. Together, against the M2 baseline (full task set, 63 items, 3 repeats each; open from step 4b's open-only run):
+
+| | baseline (M2) | after steps 1-4 |
+|---|---|---|
+| task success | 0.450 | **0.598** |
+| key-facts score | 0.525 | **0.686** |
+| summarize | 3.3/10 | 7.0/10 |
+| compare | 1.7/8 | 4.3/8 |
+| extract | 2.0/8 | 4.7/8 |
+| open (calculations) | 5.7/15 | 6.3/15 |
+| transform | 6.7/8 | 7.3/8 |
+| list | 5/5 | 4/5 |
+| clarify | 3/6 | 4/6 |
+| forbidden (planted text in answers) | 0 | 0 |
+| CUAD lookup correctness, router on / off | 0.809 / 0.802 | 0.806 / 0.792 |
+
+Latency p50 against the targets: lookup ~3.5 s (target ≤ 2 s; the planner is ~1.8 s of it), list ~1.9 s (target < 1 s), summarize ~6.2 s, compare ~8-10 s (target < 15 s), extract ~6.8 s, open ~4.5 s (target < 30 s).
+
+What moved the numbers, in order of effect: reading the documents instead of their cards (step 1), the planner naming documents in the user's words (step 3), notes and reading for extract (step 2), and a calculator phase where the planner flags one (step 4). Not reached: open ≥ 9/15 (the planner misses four calculations), list-05 (a cross-lingual list match). Caveats: one item per task is within noise, and the key-facts judge occasionally scores identical answers differently (1.0 vs 0.5), so read means over repeats, not single runs.
+
 ### Course correction step 0–1: reading whole documents (2026-10-14)
 
 Plan in EXECUTION_PLAN.md ("Course correction: read, don't route"). Same machine and task set, GPU to itself, **3 repeats each**, mean (and per-run counts).
@@ -419,19 +441,16 @@ Retrieval metrics are identical on and off. The two personal questions the plann
 
 Option not taken without a decision and a lookup regression run: run the phase on every answer (the model replies "done" when nothing needs computing). It would catch the four missed calculations, at about 0.5-1 s (estimated) on every lookup, which is already 3.5 s p50 against a 2 s target.
 
-### Still to measure (M2 on)
+### Still to measure (Phase 5.5)
 
-Measured above: router accuracy, task success per type (1 pass), planner cost on lookups and the regression gate. Still to come (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):
+Measured above: router accuracy, task success per type over 3 repeats, planner cost on lookups, latency per task type and the lookup regression gate. Still to come (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):
 
-- **The four requests that failed before Phase 5.5** (summarize ×2, list, compare; EXECUTION_PLAN.md) and their Hebrew versions.
-- **Router accuracy** on labeled requests (English and Hebrew).
-- **Task success per type** (list, summarize, compare, extract, transform, multi-step, clarify) from the key-facts judge, averaged over 3 runs (`vaultmind eval tasks --repeat 3`).
-- **Planner cost on lookups:** `plan_p50_ms` and `lookup_route_rate` from `eval run`.
+- **The four requests that failed before Phase 5.5** (summarize x2, list, compare) and their Hebrew versions, by hand in the app. The task set covers these kinds of requests, but they haven't been retried by hand since the changes.
 - **Citation precision:** the share of cited sections that a tool actually read.
-- **Open loop (M3):** valid tool-call rate, steps per task, how often the recipe fallback was used.
-- **Injection through tools:** documents that try to trigger a tool call.
-- **Latency per task type** against the targets: lookup ≤ 2 s, list < 1 s, cached summary < 1 s, new summary first token < 10 s, compare < 15 s, open tasks < 30 s.
-- **Regression gate:** CUAD and personal lookup correctness, abstention and latency must match the Phase 4 default above, within noise, with the router on vs. `agent.router: false`.
+- **Injection through tools:** documents that try to trigger a tool call (the calc phase is the first place the answer path makes tool calls).
+- **Planner latency options:** `qwen3:4b` as the planner, or no planner call for clear lookups.
+- **Open loop (M3), if it is built:** valid tool-call rate, steps per task, how often the fallback was used.
+- **Cached summary < 1 s** (not measured; summaries are no longer served from cards).
 
 ## Credits
 
