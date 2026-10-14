@@ -54,7 +54,8 @@ def main(arg: str) -> None:
             for i in _rows(DATASETS / "personal_tasks.jsonl")
             if i["id"].startswith(tuple(arg.split(",")))
         ]
-        ok = 0
+        names = {e.file.id: e.name for e in catalog.entries()}
+        ok = docs_ok = docs_checked = 0
         for item in items:
             p = run(item["request"])
             want_clarify = bool(item.get("clarify"))
@@ -62,11 +63,20 @@ def main(arg: str) -> None:
                 want_clarify or p.task == item["task"]
             )
             ok += good
+            # Documents: the resolved files against the item's own (when it lists them and
+            # doesn't expect a question). None named means the recipe searches for them.
+            docs = "-"
+            gold = set(item.get("documents") or [])
+            if gold and not want_clarify and p.task != "lookup":
+                got = {names[d] for d in p.documents}
+                docs_checked += 1
+                docs_ok += got == gold
+                docs = "ok" if got == gold else ("search" if not got else "WRONG")
             print(
-                f"{'ok ' if good else 'BAD'} {item['id']:13} task={p.task:9} "
-                f"docs={len(p.documents)} focus={p.focus!r} clarify={(p.clarify or '')[:60]!r}"
+                f"{'ok ' if good else 'BAD'} {item['id']:13} task={p.task:9} docs={docs:6} "
+                f"n={len(p.documents)} focus={p.focus!r} clarify={(p.clarify or '')[:50]!r}"
             )
-        print(f"{ok}/{len(items)}")
+        print(f"task/clarify {ok}/{len(items)}, documents {docs_ok}/{docs_checked}")
 
 
 def _rows(path: Path) -> list[dict[str, Any]]:

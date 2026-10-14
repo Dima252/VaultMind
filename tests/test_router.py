@@ -160,11 +160,30 @@ def test_plan_asks_when_a_summary_names_no_document(vault: Vault) -> None:
     assert planned.plan.clarify.startswith("Which document should I summarize?")
 
 
-def test_plan_asks_when_a_comparison_names_one_document(vault: Vault) -> None:
-    llm = FakeLLM([_plan("compare", [WORKSHEET], language="he")])
-    planned = planner.plan("השווה", [], llm=llm, catalog=vault.ctx.catalog, catalog_files=9)
-    assert planned.plan.clarify is not None
-    assert planned.plan.clarify.startswith("אילו מסמכים להשוות?")
+def test_plan_lets_a_comparison_name_one_document_or_none(vault: Vault) -> None:
+    # Two topics inside one document, or found by search: no question (2026-10-14).
+    for named in ([WORKSHEET], []):
+        llm = FakeLLM([_plan("compare", named, language="he")])
+        planned = planner.plan("השווה", [], llm=llm, catalog=vault.ctx.catalog, catalog_files=9)
+        assert planned.plan.clarify is None
+        assert len(planned.plan.documents) == len(named)
+
+
+def test_plan_drops_a_models_clarify_outside_summarize_and_generate(vault: Vault) -> None:
+    stray = "The worksheet does not specify the cost."
+    for task, kept in (("open", False), ("compare", False), ("summarize", True)):
+        llm = FakeLLM([_plan(task, [WORKSHEET], clarify=stray)])
+        planned = planner.plan("x", [], llm=llm, catalog=vault.ctx.catalog, catalog_files=9)
+        assert (planned.plan.clarify == stray) is kept, task
+
+
+def test_compare_naming_no_document_finds_them_by_search(vault: Vault) -> None:
+    llm = FakeLLM([_plan("compare", focus="final exam"), "Compared."])
+    _, result = _run(vault, llm, "Compare what the documents say about the final exam")
+    calls = [(e.data["name"], e.data["arguments"]) for e in result.trace if e.node == "tool"]
+    assert calls[0] == ("search", {"query": "final exam"})
+    assert ("read", {"doc": vault.ids["syllabus"]}) in calls[1:]
+    assert len(calls) - 1 <= recipes.FOUND_DOCUMENTS["compare"]
 
 
 def test_plan_without_a_previous_answer_is_not_a_transform(vault: Vault) -> None:
@@ -272,6 +291,15 @@ def test_list_with_a_filter_asks_the_model(vault: Vault) -> None:
     assert _event(result, "tool")["name"] == "list_documents"
     respond_prompt = llm.calls[1][-1]["content"]
     assert "AI in the workplace syllabus.pdf" in respond_prompt
+
+
+def test_list_with_a_filter_sees_the_whole_catalog(vault: Vault) -> None:
+    cfg = _cfg(vault.root, observation_tokens=20)  # far less than the catalog
+    llm = FakeLLM([_plan("list", focus="courses"), "Only the AI syllabus."])
+    _run(vault, llm, "Which documents are about courses?", cfg=cfg)
+    respond_prompt = llm.calls[1][-1]["content"]
+    assert "[truncated: " not in respond_prompt
+    assert "notes/intro-algorithms.pdf" in respond_prompt  # the last file listed
 
 
 def test_summarize_reads_a_document_that_fits_whole(vault: Vault) -> None:

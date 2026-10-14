@@ -292,7 +292,7 @@ Cards stay, but only for the catalog, resolving documents and "which document co
    - **Gate:** extract ≥ 5/8; map-reduce answers within 1 key fact of whole-document answers on the same items; latency within the targets below.
    - Optional, only if many documents end up over budget: try `num_ctx` 32K with a q8 KV cache (`OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KV_CACHE_TYPE=q8_0`). Measure VRAM with the reranker and embedder loaded, and latency. Not adopted without the numbers.
 
-3. **Simplify the planner** (only after E1 passes).
+3. ✅ **Simplify the planner** (only after E1 passes). *Done 2026-10-14 in a narrower form: the planner returns documents in the user's words (resolved by `Catalog.resolve`), a compare may name one document or none (then search), the model's clarify counts only for summarize/generate, filtered lists see the whole catalog. With steps 1-2: task success 0.450 → 0.598, summarize 7.0/10 and compare 4.3/8, so step 1's gate is met (RESULTS.md). The `context`-kind rewrite below is deferred: after steps 1-2 the task label among the reading tasks only picks a one-line instruction, and no measurement points at it.*
    - The plan returns `context` (the table above), `documents`, `one_document`, `clarify` and `calculate` (step 4). The answer language comes from `guess_language` in code, plus the target language for a transform.
    - It drops `task`, `focus`, `fields` and `steps`. The respond call gets one general instruction ("do what the request asks from the documents below, citing...") in place of `INSTRUCTIONS` per task.
    - "Every deadline in my syllabi" becomes `documents` with the planner naming each matching document. That's the same rule as a list with a description, so the list regression is fixed by the same change.

@@ -358,6 +358,39 @@ E1 = `agent.read_budget_tokens: 10000` (the documents named are read whole when 
 - **open-05** asks for the days between two lectures; the dates are only in the file names. Step 4.
 - **Judge strictness:** compare-03's answer had the right table (Kruskal Θ(m log m) vs Prim Θ(m + n log n)); the gold fact says Θ(m log n), which is the same bound, and the item scored 0.8, 0, 0 over three runs.
 
+### Course correction step 3: the planner picks documents by the user's words (2026-10-14)
+
+After steps 1-2 the whole-document tasks share one reading path and differ only in a one-line instruction, so a wrong task label among them costs little; the planner's choice of **documents** was the main cause left. Step 3 was narrowed to that (the full "context kind" rewrite is deferred until a measurement needs it):
+- the planner returns documents in the user's own words and `Catalog.resolve` matches them (it used to copy a catalog name, and copied wrong ones); list-with-a-description still names catalog matches;
+- a compare may name one document (two topics inside it) or none, and then finds its documents by search like extract (it used to require two, so the model added lectures);
+- the model's own `clarify` counts only for summarize and generate (for open tasks it wrote answers there); the code's checks still ask for ambiguous mentions and "the lecture" with several fits;
+- a filtered list sees the whole catalog (it was cut at 2,000 tokens, before the personal files).
+
+**Planner alone** (`scripts/dev/plan_probe.py`, one pass, now also checks the resolved documents against each item's): task/clarify 41 → 42 of 55; documents fixed for summarize-10 (Gridiron), compare-04 (now searched, not lessons 20-21), open-01; clarify-04 now asks. Lookups stay lookups: CUAD 60/60, personal 24/27 (25/27 before).
+
+**Full task set, 3 repeats (run 20261014-211109) against the step 0 baseline:**
+
+| | baseline (cards, M2 planner) | after steps 1-3 |
+|---|---|---|
+| **task success** | 0.450 (0.444-0.460) | **0.598** (0.556-0.635) |
+| key-facts score | 0.525 | 0.686 |
+| router accuracy | 0.825 | 0.825 |
+| clarify accuracy | 0.500 | 0.667 |
+| forbidden rate | 0 | 0 |
+| summarize | 3.3/10 | **7.0/10** |
+| compare | 1.7/8 | **4.3/8** |
+| extract | 2.0/8 | 4.7/8 |
+| transform | 6.7/8 | 7.3/8 |
+| list | 5/5 | 4/5 |
+| open | 5.7/15 | 4.3/15 |
+| clarify | 3/6 | 4/6 |
+| injection | 1/3 | 2/3 |
+| p50 total / summarize / compare / extract | 4.4 / 5.9 / 7.8 / 5.7 s | 4.7 / 6.2 / 8.2 / 6.8 s |
+
+**Step 1's gate (summarize ≥ 7/10, compare ≥ 4/8) is met** with steps 1-3 together. Regressions, item by item:
+- **list-05** (Hebrew "documents about renting a warehouse") lists the Wrenfield lease but not its English abstract in every run (was 3/3). Letting the answer call filter the whole catalog instead of the planner's picks didn't fix it (list 4/5 either way, run 20261014-214402) and made "What documents do I have?" take 13.8 s instead of 1.5 s, so the planner's picks stay.
+- **open:** open-06 is the same addition error as in step 1 (0/3; step 4), open-15 the judge-noise item; the others moved by one run.
+
 ### Still to measure (M2 on)
 
 Measured above: router accuracy, task success per type (1 pass), planner cost on lookups and the regression gate. Still to come (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):

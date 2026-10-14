@@ -22,7 +22,9 @@ from vaultmind.agent.types import Plan, ToolResult
 from vaultmind.core.providers import Message, ToolCall
 
 MAX_DOCUMENTS = 4  # documents one summarize / compare / generate recipe reads
-EXTRACT_DOCUMENTS = 5  # documents an extract picks by search when none are named
+# Documents a task picks by search when the request names none ("every deadline in my
+# syllabi"; "compare Edit Distance with interval scheduling").
+FOUND_DOCUMENTS = {"extract": 5, "compare": 3}
 MAX_SOURCES = 40  # numbered sources shown to the respond call
 MAX_CALLS = 2 * MAX_DOCUMENTS + 1  # the most tool calls a recipe makes (the step budget)
 
@@ -146,15 +148,17 @@ def run(
         if plan.documents:
             out.answer = document_list(catalog, plan.language, only=plan.documents)
         elif plan.focus:
-            use("list_documents")
+            # The whole catalog, not the first 2,000 tokens: cut there, it lost every
+            # personal file after the CUAD contracts (2026-10-14).
+            use("list_documents", budget=read_budget or None)
         else:
             out.answer = document_list(catalog, plan.language)
         return out
 
+    if not docs and task in FOUND_DOCUMENTS:
+        found = use("search", query=plan.focus or question)
+        docs = _files_of(found, catalog)[: FOUND_DOCUMENTS[task]]
     if task == "extract":
-        if not docs:
-            found = use("search", query=plan.focus or question)
-            docs = _files_of(found, catalog)[:EXTRACT_DOCUMENTS]
         if docs and doc_tokens is not None and read_budget > 0 and notes:
             out.documents = docs
             _read_all(docs, question, use, doc_tokens, read_budget)
