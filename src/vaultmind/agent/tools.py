@@ -26,6 +26,7 @@ from vaultmind.agent.baseline import Source, to_sources
 from vaultmind.agent.catalog import Catalog, CatalogEntry, summary_line
 from vaultmind.agent.guard import neutralize, redact_injections
 from vaultmind.agent.retrieval import candidates, rerank
+from vaultmind.agent.text import estimate_tokens
 from vaultmind.agent.types import ToolError
 from vaultmind.core.config import Config
 from vaultmind.core.models import ParentSection, SearchHit, SectionSummary
@@ -225,7 +226,7 @@ SUMMARY_RESERVE_TOKENS = 2048  # prompt, instructions and the answer, per summar
 SUMMARY_CHARS_PER_TOKEN = 3  # conservative: Hebrew tokenizes denser than English
 SUMMARY_MIN_CHARS = 2000  # per map call, however small num_ctx is
 SUMMARY_CACHE_SIZE = 128
-READ_FOOTER_CHARS = 300  # kept free in the read budget for the "left out" note
+READ_FOOTER_TOKENS = 100  # kept free in the read budget for the "left out" note
 
 
 _OWN_TAGS = re.compile(r"<\s*(/?)\s*(section|passage)\b[^<>]*>", re.IGNORECASE)
@@ -407,17 +408,19 @@ def _read(ctx: ToolContext, args: ReadArgs) -> ToolOutput:
         note = f"\n({entry.name} has no page numbers, so this is from the start.)"
         args = args.model_copy(update={"pages": None})
     chosen = _select(entry, parents, args)
-    budget = ctx.cfg.agent.observation_tokens * CHARS_PER_TOKEN - READ_FOOTER_CHARS
+    budget = ctx.cfg.agent.observation_tokens - READ_FOOTER_TOKENS
+    guard = ctx.cfg.agent.injection_guard
     parts: list[str] = []
     read: list[int] = []
     used = 0
     for i in chosen:
-        block = f"[{i}] {_section_label(parents[i - 1])}\n{parents[i - 1].text.strip()}"
-        if read and used + len(block) > budget:
+        block = _read_block(i, parents[i - 1], guard=guard)
+        tokens = estimate_tokens(block)
+        if read and used + tokens > budget:
             break
         parts.append(block)
         read.append(i)
-        used += len(block) + 2
+        used += tokens
     left = [i for i in chosen if i not in read]
     header = f"{entry.name}, sections {_ranges(read)} of {len(parents)}:{note}"
     text = "\n\n".join([header, *parts])
@@ -427,6 +430,24 @@ def _read(ctx: ToolContext, args: ReadArgs) -> ToolOutput:
             "Call read again with those section numbers to continue.]"
         )
     return ToolOutput(text, tuple(_source(entry, parents[i - 1]) for i in read))
+
+
+def _read_block(i: int, parent: ParentSection, *, guard: bool) -> str:
+    """Section `i` as `read` shows it. "Section 3:" rather than "[3]", which an answer citing
+    numbered sources would take for source 3. With the guard on, flagged paragraphs are
+    dropped, as for cards: an answer written over a whole document repeated planted text as
+    a term of it (2026-10-14)."""
+    text = parent.text.strip()
+    if guard:
+        text = redact_injections(text)
+    return f"Section {i}: {_section_label(parent)}\n{text}"
+
+
+def document_tokens(index: ChunkIndex, file_id: str, *, guard: bool) -> int:
+    """About how many tokens of budget `read` needs to show the whole document."""
+    parents = index.parents_for_file(file_id)
+    blocks = sum(estimate_tokens(_read_block(i, p, guard=guard)) for i, p in enumerate(parents, 1))
+    return blocks + READ_FOOTER_TOKENS
 
 
 def _select(entry: CatalogEntry, parents: Sequence[ParentSection], args: ReadArgs) -> list[int]:

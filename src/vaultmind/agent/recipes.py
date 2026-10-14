@@ -1,17 +1,18 @@
 """Recipes: fixed tool sequences for the common document tasks (Phase 5.5).
 
-list -> the catalog; summarize -> each document's summary; compare -> both summaries, plus a
-scoped search when the request has a focus; extract -> one extraction table; generate and
-open -> summaries and scoped searches as material. Every call goes through the gateway, so
-observations are budgeted, guarded and wrapped as data. `respond_messages` then builds the
-one call that writes the answer, citing the sections the tools read.
+list -> the catalog; extract -> one extraction table; summarize, compare, generate and open ->
+the documents read whole when they fit the reading budget together (`agent.read_budget_tokens`),
+else each document's summary plus a scoped search when the request has a focus. Every call
+goes through the gateway, so observations are budgeted, guarded and wrapped as data.
+`respond_messages` then builds the one call that writes the answer, citing the sections the
+tools read.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Protocol
 
 from vaultmind.agent.baseline import Source
 from vaultmind.agent.catalog import Catalog, CatalogEntry, first_sentence
@@ -26,12 +27,20 @@ MAX_CALLS = 2 * MAX_DOCUMENTS + 1  # the most tool calls a recipe makes (the ste
 
 LANGUAGES = {"en": "English", "he": "Hebrew"}
 
+# Read whole, a syllabus came back as "the course trains students to use AI tools" without the
+# grading split, credits or number of topics that were in front of the model (2026-10-14).
+CONCRETE = (
+    "Prefer concrete details to general description: numbers, percentages, amounts, dates "
+    "and deadlines, names, and how many parts, questions or topics there are, exactly as "
+    "the documents give them."
+)
+
 INSTRUCTIONS: dict[str, str] = {
     "summarize": "Summarize the document{s} for the user: one sentence on what {it_is}, then "
-    "5-10 short bullet points with the key content{focus}.",
+    "5-10 short bullet points with the key content{focus}. " + CONCRETE,
     "compare": "Compare the documents: say what each one is, where they agree, and where "
     "they differ{focus}. Answer any specific question in the request directly. Use a short "
-    "table when it makes the comparison clearer.",
+    "table when it makes the comparison clearer. " + CONCRETE,
     "extract": "Show the extracted values as a markdown table, keeping the page numbers, and "
     "then answer the request in one or two sentences. Values marked 'not found' stay that "
     "way: do not guess them.",
@@ -102,7 +111,8 @@ class Gathered:
         return list(seen.values())
 
 
-Call = Callable[[ToolCall], ToolResult]
+class Call(Protocol):
+    def __call__(self, call: ToolCall, /, *, budget_tokens: int | None = None) -> ToolResult: ...
 
 
 def run(
@@ -112,16 +122,19 @@ def run(
     gateway: Gateway,
     catalog: Catalog,
     call: Call | None = None,
+    read_budget: int = 0,
+    doc_tokens: Callable[[str], int] | None = None,
 ) -> Gathered:
     """Gather what the plan's task needs. `call` runs one tool call (default: `gateway.call`);
-    the graph passes one that also records a trace event."""
+    the graph passes one that also records a trace event. With `read_budget` and `doc_tokens`
+    (a file id's size as `read` shows it), documents that fit together are read whole."""
     do = call or gateway.call
     task = plan.task
     out = Gathered()
     docs = list(plan.documents)
 
-    def use(name: str, **arguments: Any) -> ToolResult:
-        result = do(ToolCall(name, arguments))
+    def use(name: str, budget: int | None = None, **arguments: Any) -> ToolResult:
+        result = do(ToolCall(name, arguments), budget_tokens=budget)
         out.results.append(result)
         return result
 
@@ -145,6 +158,11 @@ def run(
         return out
 
     docs = docs[:MAX_DOCUMENTS]
+    out.documents = docs
+    if docs and doc_tokens is not None and fits(docs, doc_tokens, read_budget):
+        for doc in docs:
+            use("read", budget=read_budget, doc=doc)
+        return out
     focus = plan.focus or ""
     for doc in docs:
         if task == "summarize" and focus:
@@ -153,8 +171,12 @@ def run(
             use("summarize", doc=doc)
         if task == "open" or (focus and task in ("compare", "generate")):
             use("search", query=focus or question, doc=doc)
-    out.documents = docs
     return out
+
+
+def fits(docs: Sequence[str], doc_tokens: Callable[[str], int], budget: int) -> bool:
+    """Whether the documents, read whole, fit `budget` tokens together (0: reading is off)."""
+    return budget > 0 and sum(doc_tokens(d) for d in docs) <= budget
 
 
 def document_list(catalog: Catalog, language: str, *, only: Sequence[str] = ()) -> str:

@@ -1,0 +1,4 @@
+# The default config with whole-document reading off: summarize / compare / generate / open
+# recipes read the document cards (plus a scoped search on a focus), as before 2026-10-14.
+agent:
+  read_budget_tokens: 0

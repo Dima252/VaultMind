@@ -68,6 +68,7 @@ class AgentConfig(_Section):
     catalog_files: int = Field(default=60, ge=0)  # documents listed in the planner prompt
     max_steps: int = Field(default=6, gt=0)  # tool calls per open task
     observation_tokens: int = Field(default=2000, gt=0)  # per tool result shown to the model
+    read_budget_tokens: int = Field(default=10000, ge=0)  # recipes read documents whole; 0: cards
     think_open: bool = True  # thinking on for open-task tool steps only (M3 loop, unwired)
 
 

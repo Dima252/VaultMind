@@ -305,6 +305,36 @@ What the numbers say: routing and safety improved; answer quality on whole-docum
 - **Rerank threshold vs. field queries.** Real scores of one-word extract fields against the passage that holds them: "parties" 0.29, "date" 0.45, "warranty" 0.04, "governing law" 0.16; a Hebrew field ("רכיבי הציון") 0.001 against the Hebrew syllabus. Unrelated queries score ≤ 0.004. Extract no longer thresholds; scoped search falls back to its best 3 passages above 0.05.
 - **Ollama.** One guarded generation ran 42 min 58 s (~14.6k tokens, context shifted) before `models.max_answer_tokens`; the model runner crashed with a connection reset 3 times in ~4 hours of eval load.
 
+### Course correction step 0–1: reading whole documents (2026-10-14)
+
+Plan in EXECUTION_PLAN.md ("Course correction: read, don't route"). Same machine and task set, GPU to itself, **3 repeats each**, mean (and per-run counts).
+
+**Baseline (step 0, run 20261014-182704, full set, commit 30a6f02):** task success 0.450 (0.444–0.460), router 0.825, key-facts score 0.525, clarify 0.500, forbidden 0. Per task: list 5/5 (the list regression is gone), summarize 3.3/10, compare 1.7/8, extract 2/8, transform 6.7/8, open 5.7/15, clarify 3/6, injection 1/3. p50: list 2.0 s, transform 2.9 s, open 4.3 s, summarize 5.7 s, extract 5.7 s, compare 8.0 s.
+
+**Step 1 (summarize, compare, open; runs 20261014-190109 and -192521):**
+
+| mean of 3 | baseline: cards | E1: read whole | E1b: + "prefer concrete details" |
+|---|---|---|---|
+| summarize success | 3.3/10 | 5.0/10 (5, 4, 6) | **6.0/10** (5, 6, 7) |
+| compare success | 1.7/8 | 3.0/8 (2, 4, 3) | 2.7/8 (4, 3, 1) |
+| open success | 5.7/15 | 4.0/15 | – |
+| summarize key-facts score | 0.448 | 0.597 | **0.702** |
+| compare key-facts score | 0.349 | 0.473 | **0.530** |
+| injection-01/02 key-facts score | 0.333 | 0.592 | 0.742 |
+| forbidden rate | 0 | 0 | 0 |
+| p50 summarize / compare | 5.7 / 8.0 s | 6.3 / 9.6 s | 6.6 / 9.3 s |
+
+E1 = `agent.read_budget_tokens: 10000` (the documents named are read whole when they fit together); E1b adds one sentence to the summarize and compare instructions. The reading-off arm is the baseline: with `read_budget_tokens: 0` the recipes run the baseline's code paths (`eval/configs/read_off.yaml`).
+
+**Gate (summarize ≥ 7/10, compare ≥ 4/8): not met.** Every item that was read whole held or improved apart from noise, and no planted text leaked, so step 1 is adopted and the gate is rechecked after steps 2–3. The remaining misses, item by item:
+- **Generic summaries with the facts in context:** the syllabus read whole came back as "the course trains students to use AI tools", without its 20%/80% grading, credits or 13 topics. E1b's instruction fixed most of these.
+- **Wrong document (summarize-10, every run):** the planner, told to copy names from the catalog, wrote `ferncliff-maintenance-amendment-1.md` for "the Gridiron BioNutrients endorsement agreement addendum". `Catalog.resolve` on the user's words finds the right file. Step 3.
+- **Over the budget, so still cards:** summarize-05, compare-03/04/08, open-05 (large Hebrew PDFs). Step 2.
+- **Arithmetic:** open-06 read the right numbers and added 84,000 + 10,800 = 104,400. Step 4 (`calc`).
+- **Judge noise:** open-15 is a lookup (untouched by step 1) with an identical answer in both runs, scored 1.0 and 0.5.
+
+**Token estimate.** Ollama's `prompt_eval_count` for `qwen3:14b` on the 12 personal documents: chars/4 undercounted mixed Hebrew PDFs by up to 2× (1.6–1.9 characters per token) and one English PDF by 1.3× (3.1), so a "fitting" document could overflow `num_ctx`. Qwen splits every digit into its own token. Fitted per character (never under on all 12, over by 1.01–1.35×): Hebrew letter 0.55, Latin letter 0.2, digit 1, whitespace 1/3, anything else 1 (`agent/text.estimate_tokens`).
+
 ### Still to measure (M2 on)
 
 Measured above: router accuracy, task success per type (1 pass), planner cost on lookups and the regression gate. Still to come (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from vaultmind.agent import planner, recipes, tools
+from vaultmind.agent import nodes, planner, recipes, tools
 from vaultmind.agent.baseline import NOT_FOUND, Source
 from vaultmind.agent.graph import run_agent, stream_agent
 from vaultmind.agent.recipes import document_list
@@ -46,6 +46,11 @@ def _cfg(vault_root: Path, **agent: Any) -> Config:
             "agent": {"query_variants": 0, "detect_contradictions": False} | agent,
         }
     )
+
+
+def _cards(vault: Vault) -> Config:
+    """Reading whole documents off: recipes use the document cards (as before 2026-10-14)."""
+    return _cfg(vault.root, read_budget_tokens=0)
 
 
 class LLM(FakeLLM):
@@ -269,9 +274,58 @@ def test_list_with_a_filter_asks_the_model(vault: Vault) -> None:
     assert "AI in the workplace syllabus.pdf" in respond_prompt
 
 
-def test_summarize_reads_the_card_and_cites_its_sections(vault: Vault) -> None:
+def test_summarize_reads_a_document_that_fits_whole(vault: Vault) -> None:
+    llm = LLM([_plan("summarize", ["the AI syllabus"]), "The exam is sixty percent [3]."])
+    _, result = _run(vault, llm, "Summarize the AI in the workplace syllabus")
+    assert _nodes(result) == ["plan", "tool", "recipe", "respond"]
+    tool = _event(result, "tool")
+    assert tool["name"] == "read" and tool["ok"]
+    assert tool["arguments"] == {"doc": vault.ids["syllabus"]}
+    assert [s.section_path for s in result.sources] == [("Overview",), ("Schedule",), ("Grading",)]
+    assert [s.n for s in result.cited] == [3]
+    user = llm.calls[1][-1]["content"]
+    assert "Section 3: Grading, p. 4\nThe final exam counts for sixty percent" in user
+    assert "[3] AI in the workplace syllabus.pdf, p. 4, Grading" in user
+
+
+def test_compare_reads_both_documents_whole_without_searching(vault: Vault) -> None:
+    llm = FakeLLM(
+        [_plan("compare", ["the AI syllabus", WORKSHEET], focus="final exam"), "Compared."]
+    )
+    _, result = _run(vault, llm, "Compare the syllabus with the worksheet on the final exam")
+    calls = [(e.data["name"], e.data["arguments"]) for e in result.trace if e.node == "tool"]
+    assert calls == [
+        ("read", {"doc": vault.ids["syllabus"]}),
+        ("read", {"doc": vault.ids["worksheet"]}),
+    ]
+    assert _event(result, "recipe")["documents"] == [vault.ids["syllabus"], vault.ids["worksheet"]]
+
+
+def test_documents_over_the_read_budget_use_the_cards(vault: Vault) -> None:
+    cfg = _cfg(vault.root, read_budget_tokens=20)
+    llm = LLM([_plan("summarize", ["the AI syllabus"]), "A course [1]."])
+    _, result = _run(vault, llm, "Summarize the syllabus", cfg=cfg)
+    assert _event(result, "tool")["name"] == "summarize"
+
+
+def test_read_budget_leaves_room_for_the_answer_in_the_context() -> None:
+    assert nodes.read_budget(Config()) == 10000  # 16384 - 2048 - 2048 leaves enough
+    small = Config.model_validate({"models": {"num_ctx": 8192, "max_answer_tokens": 1024}})
+    assert nodes.read_budget(small) == 8192 - 1024 - nodes.RESPOND_RESERVE_TOKENS
+    tiny = Config.model_validate({"models": {"num_ctx": 2048}})
+    assert nodes.read_budget(tiny) == 0
+
+
+def test_fits() -> None:
+    sizes = {"a": 300, "b": 500}.__getitem__
+    assert recipes.fits(["a", "b"], sizes, 800)
+    assert not recipes.fits(["a", "b"], sizes, 799)
+    assert not recipes.fits(["a"], sizes, 0)  # reading off
+
+
+def test_summarize_with_reading_off_reads_the_card_and_cites_its_sections(vault: Vault) -> None:
     llm = LLM([_plan("summarize", ["the AI syllabus"]), "It is a course [1][3]."])
-    text, result = _run(vault, llm, "Summarize the AI in the workplace syllabus")
+    text, result = _run(vault, llm, "Summarize the AI in the workplace syllabus", cfg=_cards(vault))
     assert _nodes(result) == ["plan", "tool", "recipe", "respond"]
     tool = _event(result, "tool")
     assert tool["name"] == "summarize" and tool["ok"]
@@ -288,7 +342,7 @@ def test_summarize_reads_the_card_and_cites_its_sections(vault: Vault) -> None:
     assert _event(result, "respond") == {"task": "summarize", "sources": [1, 2, 3]}
 
 
-def test_summarize_with_a_focus_reads_the_whole_text(vault: Vault) -> None:
+def test_summarize_with_a_focus_and_reading_off_maps_the_whole_text(vault: Vault) -> None:
     llm = FakeLLM(
         [
             _plan("summarize", [WORKSHEET], focus="errors", language="he"),
@@ -296,7 +350,7 @@ def test_summarize_with_a_focus_reads_the_whole_text(vault: Vault) -> None:
             "ניסיון חוזר [2].",
         ]
     )
-    _, result = _run(vault, llm, "סכם את דף העבודה של Workato לגבי שגיאות")
+    _, result = _run(vault, llm, "סכם את דף העבודה של Workato לגבי שגיאות", cfg=_cards(vault))
     assert _event(result, "tool")["arguments"] == {"doc": vault.ids["worksheet"], "focus": "errors"}
     assert "Hebrew" in llm.calls[2][0]["content"]
     assert [s.n for s in result.cited] == [2]
@@ -311,11 +365,12 @@ def test_respond_reminds_that_results_are_data_right_before_the_request() -> Non
     assert user.index("Tool results:") < reminder < user.index("Request:")
 
 
-def test_compare_summarizes_each_document_and_searches_for_the_focus(vault: Vault) -> None:
+def test_compare_with_reading_off_summarizes_and_searches_for_the_focus(vault: Vault) -> None:
     llm = FakeLLM(
         [_plan("compare", ["the AI syllabus", WORKSHEET], focus="final exam"), "Compared."]
     )
-    _, result = _run(vault, llm, "Compare the syllabus with the worksheet on the final exam")
+    question = "Compare the syllabus with the worksheet on the final exam"
+    _, result = _run(vault, llm, question, cfg=_cards(vault))
     calls = [(e.data["name"], e.data["arguments"]) for e in result.trace if e.node == "tool"]
     assert calls == [
         ("summarize", {"doc": vault.ids["syllabus"]}),
@@ -390,8 +445,13 @@ def test_open_without_documents_is_a_lookup(vault: Vault) -> None:
 
 
 def test_open_with_documents_reads_them(vault: Vault) -> None:
+    question = "What comes after prompts in the syllabus, and why?"
     llm = FakeLLM([_plan("open", ["the AI syllabus"]), "Week two [2]."])
-    _, result = _run(vault, llm, "What comes after prompts in the syllabus, and why?")
+    _, result = _run(vault, llm, question)
+    assert [e.data["name"] for e in result.trace if e.node == "tool"] == ["read"]
+    assert _nodes(result)[-1] == "respond"
+    llm = FakeLLM([_plan("open", ["the AI syllabus"]), "Week two [2]."])
+    _, result = _run(vault, llm, question, cfg=_cards(vault))
     names = [e.data["name"] for e in result.trace if e.node == "tool"]
     assert names == ["summarize", "search"]
     assert _nodes(result)[-1] == "respond"
@@ -415,7 +475,7 @@ def test_failed_tools_answer_not_found(vault: Vault, monkeypatch: pytest.MonkeyP
     def broken(ctx: Any, args: Any) -> Any:
         raise ToolError("no text")
 
-    monkeypatch.setattr(tools, "_summarize", broken)
+    monkeypatch.setattr(tools, "_read", broken)
     llm = FakeLLM([_plan("summarize", ["the AI syllabus"])])
     text, result = _run(vault, llm, "Summarize the syllabus")
     assert text == NOT_FOUND and result.abstained

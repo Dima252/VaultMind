@@ -65,11 +65,15 @@ class Gateway:
         """Tool calls executed so far (repeats answered from cache don't count)."""
         return self._steps
 
-    def call(self, call: ToolCall, *, approved: bool = False) -> ToolResult:
+    def call(
+        self, call: ToolCall, *, approved: bool = False, budget_tokens: int | None = None
+    ) -> ToolResult:
         """Run one call. Problems the model can fix (unknown tool, invalid arguments,
         `ToolError` such as `DocumentNotFound`, the step budget used up) come back as a
         failed `ToolResult` whose `error` says what to change. Raises `AmbiguousDocument`
-        and, for a write tool without `approved`, `ApprovalRequired`: both need the user."""
+        and, for a write tool without `approved`, `ApprovalRequired`: both need the user.
+        `budget_tokens` replaces `agent.observation_tokens` for this call (a recipe reading
+        whole documents); the model's own calls always get the configured budget."""
         start = time.perf_counter()
         tool = self._tools.get(call.name)
         if tool is None:
@@ -87,7 +91,9 @@ class Gateway:
         if tool.write and not approved:
             raise ApprovalRequired(call)
 
-        key = f"{tool.name}:{json.dumps(args.model_dump(mode='json'), sort_keys=True)}"
+        ctx = self._ctx if budget_tokens is None else _with_budget(self._ctx, budget_tokens)
+        dumped = json.dumps(args.model_dump(mode="json"), sort_keys=True)
+        key = f"{tool.name}:{dumped}:{ctx.cfg.agent.observation_tokens}"
         if key in self._done:
             return self._done[key]
         if self._steps >= self._ctx.cfg.agent.max_steps:
@@ -95,7 +101,7 @@ class Gateway:
 
         self._steps += 1
         try:
-            output = tool.run(self._ctx, args)
+            output = tool.run(ctx, args)
         except AmbiguousDocument:
             self._steps -= 1  # the user picks the document; the call is made again then
             raise
@@ -104,7 +110,8 @@ class Gateway:
         except ToolError as exc:
             result = _failed(call, str(exc), start)
         else:
-            result = self._observe(call, tool, output.text, output.sources, start)
+            limit = ctx.cfg.agent.observation_tokens * CHARS_PER_TOKEN
+            result = self._observe(call, tool, output.text, output.sources, limit, start)
         self._done[key] = result
         return result
 
@@ -114,9 +121,10 @@ class Gateway:
         tool: Tool,
         text: str,
         sources: Sequence[Source],
+        limit: int,
         start: float,
     ) -> ToolResult:
-        shown = truncate(text, self._ctx.cfg.agent.observation_tokens * CHARS_PER_TOKEN)
+        shown = truncate(text, limit)
         flags = list(find_injections(shown))
         guarded = []
         for source in sources:
@@ -132,6 +140,11 @@ class Gateway:
             warnings=warnings,
             duration_ms=_ms(start),
         )
+
+
+def _with_budget(ctx: ToolContext, tokens: int) -> ToolContext:
+    agent = ctx.cfg.agent.model_copy(update={"observation_tokens": tokens})
+    return replace(ctx, cfg=ctx.cfg.model_copy(update={"agent": agent}))
 
 
 def truncate(text: str, limit: int) -> str:

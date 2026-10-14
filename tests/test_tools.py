@@ -358,7 +358,7 @@ def test_outline(vault: Vault) -> None:
 def test_read_whole_document(vault: Vault) -> None:
     out = run(vault.ctx, "read", doc="AI in the workplace syllabus")
     assert out.text.startswith("courses/AI in the workplace syllabus.pdf, sections 1-3 of 3:")
-    assert "[3] Grading, p. 4\nThe final exam" in out.text
+    assert "\n\nSection 3: Grading, p. 4\nThe final exam" in out.text
     assert [s.section_path for s in out.sources] == [("Overview",), ("Schedule",), ("Grading",)]
     assert all(s.n == 0 for s in out.sources)
     assert out.sources[0].file_path == vault.root.resolve() / DOCS["syllabus"][0]
@@ -394,7 +394,7 @@ def test_read_pages_of_a_document_without_pages_reads_from_the_start(vault: Vaul
 
 
 def test_read_stops_at_the_budget_and_says_what_was_left(tmp_path: Path) -> None:
-    cfg = Config.model_validate({"agent": {"observation_tokens": 100}})  # 400 chars
+    cfg = Config.model_validate({"agent": {"observation_tokens": 120}})  # 20 after the footer
     v = build_vault(tmp_path, cfg)
     out = run(v.ctx, "read", doc="syllabus")
     assert len(out.sources) == 1

@@ -1,10 +1,23 @@
-"""Small text helpers the agent modules share: model JSON output and one-line text."""
+"""Small text helpers the agent modules share: model JSON output, one-line text, token estimates."""
 
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
+
+# Tokens per character of the answer model's tokenizer, by character class. Fitted on the 12
+# personal documents against Ollama's prompt_eval_count for qwen3:14b (2026-10-14) so that it
+# never undercounts (it overcounts by 1.0-1.35x). chars/4 undercounted mixed Hebrew PDFs by
+# half: Hebrew letters split finely, and qwen splits every digit into its own token.
+_TOKENS_PER_CHAR = (
+    (re.compile("[֐-׿]"), 0.55),  # Hebrew
+    (re.compile("[A-Za-z]"), 0.2),
+    (re.compile("[0-9]"), 1.0),
+    (re.compile(r"\s"), 1 / 3),
+)
+_OTHER_TOKENS_PER_CHAR = 1.0  # punctuation, symbols, other scripts
 
 _BOUNDARY = re.compile(r"[.!?](?=\s)|\n")
 # A period after these doesn't end a sentence: titles and initials never do, the others
@@ -61,6 +74,17 @@ def _ends_sentence(text: str, period: int) -> bool:
     if word in _ABBREVIATIONS:
         return text[period + 1 :].lstrip()[:1].isupper()
     return True
+
+
+def estimate_tokens(text: str) -> int:
+    """At least as many tokens as `text` takes in a prompt, give or take a third."""
+    total = 0.0
+    counted = 0
+    for pattern, weight in _TOKENS_PER_CHAR:
+        n = len(pattern.findall(text))
+        total += n * weight
+        counted += n
+    return math.ceil(round(total + (len(text) - counted) * _OTHER_TOKENS_PER_CHAR, 6))
 
 
 def one_line(text: str, limit: int) -> str:

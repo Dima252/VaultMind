@@ -24,7 +24,7 @@ from vaultmind.agent.gateway import Gateway
 from vaultmind.agent.guard import build_answer_messages, find_injections
 from vaultmind.agent.retrieval import candidates, rerank, rrf_fuse
 from vaultmind.agent.text import clean, parse_json
-from vaultmind.agent.tools import ToolContext
+from vaultmind.agent.tools import ToolContext, document_tokens
 from vaultmind.agent.types import (
     AgentResult,
     AmbiguousDocument,
@@ -84,6 +84,7 @@ translated, as a table or as bullet points. Keep its facts and add none. Keep ci
 such as [1] next to the facts they support. Reply with the reworked answer only."""
 
 RESPOND_HISTORY_TURNS = 4  # recent chat messages the respond and transform calls see
+RESPOND_RESERVE_TOKENS = 2048  # respond prompt besides the documents: rules, history, sources
 
 DIRECT_REASON = "analyze: needs_retrieval is false (greeting or question about the assistant)"
 CHAT_REASON = "plan: the task is chat (greeting or question about the assistant)"
@@ -234,15 +235,24 @@ def recipe(state: AgentState, deps: Deps) -> Update:
     gateway = _gateway(deps)
     events: list[TraceEvent] = []
 
-    def call(tool_call: ToolCall) -> ToolResult:
+    def call(tool_call: ToolCall, *, budget_tokens: int | None = None) -> ToolResult:
         try:
-            result = gateway.call(tool_call)
+            result = gateway.call(tool_call, budget_tokens=budget_tokens)
         except AmbiguousDocument as e:  # recipes pass file ids, so this is a vault change
             result = ToolResult(tool_call, ok=False, content=f"Error: {e}", error=str(e))
         events.append(_tool_event(result))
         return result
 
-    gathered = recipes.run(p, state["question"], gateway=gateway, catalog=deps.catalog, call=call)
+    guard = deps.cfg.agent.injection_guard
+    gathered = recipes.run(
+        p,
+        state["question"],
+        gateway=gateway,
+        catalog=deps.catalog,
+        call=call,
+        read_budget=read_budget(deps.cfg),
+        doc_tokens=lambda file_id: document_tokens(deps.index, file_id, guard=guard),
+    )
     data = {"name": p.task, "documents": gathered.documents}
     return {"gathered": gathered, "trace": [*events, _event("recipe", start, data)]}
 
@@ -610,6 +620,13 @@ def _stream(llm: LLM, messages: list[Message]) -> str:
         parts.append(token)
         write(token)
     return "".join(parts).strip()
+
+
+def read_budget(cfg: Config) -> int:
+    """`agent.read_budget_tokens`, capped so the respond call's instructions, history, source
+    list and answer still fit in `num_ctx` (Ollama would silently cut the prompt's start)."""
+    room = cfg.models.num_ctx - cfg.models.max_answer_tokens - RESPOND_RESERVE_TOKENS
+    return max(0, min(cfg.agent.read_budget_tokens, room))
 
 
 def _gateway(deps: Deps) -> Gateway:

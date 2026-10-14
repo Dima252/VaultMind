@@ -276,9 +276,9 @@ Cards stay, but only for the catalog, resolving documents and "which document co
 
 **Steps, in order.** Each step ends with a gate. If a gate fails, record the numbers in RESULTS.md and stop: fall back to the old "Next session" list in STATUS.md (list fix, card-based recipes, M3 as specified).
 
-0. **Baseline.** Commit the M2 working tree as it is. Record the baseline with `eval tasks --repeat 3` (task success, per task, latency) on `default.yaml`. Every later step compares against this run, not against the single pass from 2026-10-14.
+0. ✅ **Baseline** (done 2026-10-14: task success 0.450, RESULTS.md). Commit the M2 working tree as it is. Record the baseline with `eval tasks --repeat 3` (task success, per task, latency) on `default.yaml`. Every later step compares against this run, not against the single pass from 2026-10-14.
 
-1. **E1: read whole documents (the cheap test).** The summarize / compare / generate / open recipes call `read(doc)` instead of `summarize(doc)` while all the named documents together fit a reading budget.
+1. ✅ **E1: read whole documents (the cheap test).** *Adopted 2026-10-14, gate not met on its own: summarize 3.3 → 6.0/10, compare 1.7 → 2.7/8, key-facts scores +0.25 / +0.18, no leaks, +1 s. The misses left are step 2 (over budget), step 3 (the planner copied a wrong name) and step 4 (arithmetic), so the gate is rechecked after steps 2–3 (RESULTS.md). Also added: "prefer concrete details" in the summarize and compare instructions, and a token estimate fitted to Ollama's real counts.* The summarize / compare / generate / open recipes call `read(doc)` instead of `summarize(doc)` while all the named documents together fit a reading budget.
    - New switch: `agent.read_budget_tokens` (0 = today's card behavior). The budget is the total over all documents: `num_ctx` minus the system prompt, history, `max_answer_tokens` and a margin. Start at ~10K with `num_ctx` 16K.
    - The read result is exempt from `observation_tokens` (it has its own budget); `read`'s "left out" note stays for anything cut.
    - With `injection_guard` on, read text goes through `redact_injections`, as cards and map-reduce already do. Raw document text is a new injection surface for the answer call, so the 3 injection items are part of the gate.

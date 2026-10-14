@@ -55,6 +55,9 @@ agent:
                                 # named document is still matched against every file
   max_steps: 6                  # tool calls an open, multi-step task may make
   observation_tokens: 2000      # longest tool result shown to the model, in tokens
+  read_budget_tokens: 10000     # summarize / compare / generate read the named documents whole
+                                # while they fit together in this many tokens (capped to leave
+                                # num_ctx room for the answer); 0: they use the document cards
   think_open: true              # let the model reason before open-task tool calls (slower).
                                 # For the ReAct loop (Phase 5.5 M3); not wired yet
 
