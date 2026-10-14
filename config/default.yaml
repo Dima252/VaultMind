@@ -16,6 +16,10 @@ models:
   reranker: BAAI/bge-reranker-v2-m3
   num_ctx: 16384            # Ollama's default is small and silently truncates context
   think: false              # let the LLM reason before free-form answers (slower); never for JSON calls
+  script_guard: true        # free-form answers can't contain Arabic, Cyrillic, Thai, CJK or Hangul
+                            # letters (a grammar forbids them): qwen3:14b drops such words into
+                            # Hebrew answers, mostly when the sources are English
+  max_answer_tokens: 2048    # longest free-form answer; stops a model that loops (JSON calls are not capped)
 
 chunking:
   child_tokens: 256         # small chunks are what we search over

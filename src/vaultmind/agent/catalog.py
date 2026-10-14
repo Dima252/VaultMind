@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
 
+from vaultmind.agent.text import split_sentences
 from vaultmind.agent.types import AmbiguousDocument, DocumentNotFound
 from vaultmind.core.models import DocCard, FileRecord
 from vaultmind.core.providers import Reranker
@@ -40,7 +41,6 @@ RERANK_MARGIN = 0.15
 MAX_CANDIDATES = 5
 
 _WORD = re.compile(r"\w+")
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s|\n")
 _STOPWORDS = frozenset(
     (
         *("a", "an", "the", "of", "my", "our", "your", "this", "that", "these", "those"),
@@ -148,7 +148,8 @@ def summary_line(entry: CatalogEntry) -> str:
 
 
 def first_sentence(text: str, limit: int = 200) -> str:
-    sentence = _SENTENCE_END.split(text.strip(), maxsplit=1)[0].strip()
+    sentences = split_sentences(text)
+    sentence = sentences[0] if sentences else ""
     return sentence if len(sentence) <= limit else sentence[: limit - 3].rstrip() + "..."
 
 

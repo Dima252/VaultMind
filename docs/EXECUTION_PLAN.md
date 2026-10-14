@@ -251,16 +251,82 @@ Contract changes (fixed on `main` before agents start): `LLM.chat(messages, tool
 
 Dependencies: `uv add langgraph-checkpoint-sqlite` (local SQLite checkpointer for human-in-the-loop). No other new packages; no new model downloads unless `qwen3:4b` is adopted.
 
+### Course correction (2026-10-14): read, don't route
+
+**Proposed after the first live M2 run; each step has a measured gate, and nothing is decided until its gate passes.**
+
+**What went wrong.** Routing is mostly right (router 0.84), but whole-document answers miss specific facts: summarize 4/10, compare 1/8, extract 2/8. The cause is what reaches the answer call, not which route ran:
+- summarize (no focus) returns the **document card**, an ~8-line summary, so the answer is a summary of a summary;
+- every tool result is cut at `agent.observation_tokens: 2000`;
+- yet the documents are small. Measured over the 47 indexed files (chars/4): median ~3.8K tokens, 37 fit in 8K, 44 fit in 16K, the largest is ~25K. `num_ctx` is already 16K.
+
+A second warning sign is the planner: one call returns a 9-way task label plus 8 fields, and each session adds a rule to `PLAN_SYSTEM` (`focus`, `one_document`, "open = calculation", the list rule). Fixing one item breaks another: list went from 5/5 to 2/5.
+
+**The idea.** The planner should decide *what to read*, not what kind of task it is. The answer call sees the request word for word and can follow "compare", "as a table" or "make a quiz" itself, as long as the document text is in its context.
+
+| Context | For | Path |
+|---|---|---|
+| `none` | chat | `direct` (unchanged) |
+| `previous` | transform | `respond` over the previous answer (unchanged) |
+| `passages` | lookup | the corrective graph, **unchanged** |
+| `catalog` | list | `document_list` (unchanged) |
+| `documents` | summarize, compare, extract, generate, open with documents | read the named documents whole, or query-focused map-reduce when they don't fit, then one answer call |
+
+Cards stay, but only for the catalog, resolving documents and "which document covers X". They stop being answer material. Clarify and not-found stay where they are: `Catalog.resolve` decides them in code.
+
+**Steps, in order.** Each step ends with a gate. If a gate fails, record the numbers in RESULTS.md and stop: fall back to the old "Next session" list in STATUS.md (list fix, card-based recipes, M3 as specified).
+
+0. **Baseline.** Commit the M2 working tree as it is. Record the baseline with `eval tasks --repeat 3` (task success, per task, latency) on `default.yaml`. Every later step compares against this run, not against the single pass from 2026-10-14.
+
+1. **E1: read whole documents (the cheap test).** The summarize / compare / generate / open recipes call `read(doc)` instead of `summarize(doc)` while all the named documents together fit a reading budget.
+   - New switch: `agent.read_budget_tokens` (0 = today's card behavior). The budget is the total over all documents: `num_ctx` minus the system prompt, history, `max_answer_tokens` and a margin. Start at ~10K with `num_ctx` 16K.
+   - The read result is exempt from `observation_tokens` (it has its own budget); `read`'s "left out" note stays for anything cut.
+   - With `injection_guard` on, read text goes through `redact_injections`, as cards and map-reduce already do. Raw document text is a new injection surface for the answer call, so the 3 injection items are part of the gate.
+   - Measure real token counts from Ollama's `prompt_eval_count` on the Hebrew documents. If chars/4 undercounts Hebrew (likely), make the estimate depend on the script, so a prompt never silently goes over `num_ctx`.
+   - Measure: `eval tasks --task summarize --task compare --task generate --repeat 3` with `-c eval/configs/read_off.yaml` (`read_budget_tokens: 0`) against the default.
+   - **Gate:** summarize ≥ 7/10 and compare ≥ 4/8 (mean of 3), injection items no worse, new-summary first token < 10 s, compare < 15 s.
+
+2. **E2: query-focused map-reduce for documents over budget.** When the named documents don't fit, the map step on each batch of sections is told to *pull out everything relevant to the request, with exact numbers, dates, names and pages*, instead of writing a general summary. The reduce step is the answer call itself. This replaces the generic map step in `_map_reduce` (the cache key includes the request).
+   - Extract uses the same path: each document is read whole or mapped against the request and its fields, and the answer call builds the table. Compare against today's `extract` tool (scoped search + one structured call per document).
+   - Measure: the over-budget items (lower `read_budget_tokens` to force them through the map path when the set has too few), then `--task extract --repeat 3`.
+   - **Gate:** extract ≥ 5/8; map-reduce answers within 1 key fact of whole-document answers on the same items; latency within the targets below.
+   - Optional, only if many documents end up over budget: try `num_ctx` 32K with a q8 KV cache (`OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KV_CACHE_TYPE=q8_0`). Measure VRAM with the reranker and embedder loaded, and latency. Not adopted without the numbers.
+
+3. **Simplify the planner** (only after E1 passes).
+   - The plan returns `context` (the table above), `documents`, `one_document`, `clarify` and `calculate` (step 4). The answer language comes from `guess_language` in code, plus the target language for a transform.
+   - It drops `task`, `focus`, `fields` and `steps`. The respond call gets one general instruction ("do what the request asks from the documents below, citing...") in place of `INSTRUCTIONS` per task.
+   - "Every deadline in my syllabi" becomes `documents` with the planner naming each matching document. That's the same rule as a list with a description, so the list regression is fixed by the same change.
+   - Switch: `agent.planner: tasks | context`, both kept until the comparison is recorded. Then delete the `tasks` planner and its prompts in a cleanup commit.
+   - The task eval maps each item's task label to the expected context (lookup → passages; summarize / compare / generate / extract / open with documents → documents; list → catalog; transform → previous; chat → none). Router accuracy is reported on that.
+   - Carry over the open problems: Hebrew clarify misses ("סכם את המטלה" should ask which assignment). Check with `scripts/dev/plan_probe.py`.
+   - **Gate:** routing ≥ 0.90 on the mapped labels, clarify ≥ 4/6, lookups stay lookups (CUAD 60/60, personal ≥ 25/27 in `plan_probe`), and task success no worse than after steps 1–2.
+
+4. **Calculation in the answer call** (replaces most of M3's ReAct loop).
+   - When the plan says `calculate`, the answer call (the `documents` respond call, or `generate` on the lookup path) gets `calc` and `date_diff` as native tools through the gateway. It runs non-streamed tool turns, bounded by `agent.max_steps` (lower it to 3), then streams the final answer.
+   - Without `calculate`, both paths are exactly as before, so the measured lookup path doesn't change.
+   - Measure: `--task open --repeat 3`, plus the valid tool-call rate and steps per task.
+   - **Gate:** open ≥ 9/15, valid tool calls ≥ 90%, open tasks < 30 s.
+
+5. **Human-in-the-loop** (from M3, unchanged in scope): clarify as a LangGraph `interrupt()` with the SQLite checkpointer; `Engine.ask` yields a clarify/confirm event and `Engine.resume(chat_id, decision)` continues. Confirm expensive jobs (map-reduce over many documents). Approval for writes is built when the first write tool (`save_note`) is.
+
+6. **Decide on the open ReAct loop.** Read the multi-step items that still fail after step 4. Build the bounded loop (`agent.think_open`, repair retry, fall back to the documents path) only if they fail because the model had to find something first and then read it. Otherwise it moves to "Later" with that reason.
+
+7. **Recorded runs and docs.** Run `eval tasks --repeat 3` and the lookup regression (`eval run -d cuad -d personal -c config/default.yaml -c eval/configs/router_off.yaml --repeat 3`), and record both in RESULTS.md. Update `CLAUDE.md` ("Fast paths before the tool loop": recipes become context paths), the decisions in STATUS.md, and this section (mark what was adopted). Then tick M2 and M3.
+
+**Not changing:** the lookup graph and its numbers, LangGraph, cards at ingest, the gateway (validation, guard, repeat cache), citations to sections and pages actually read, "not found" for documents that don't exist, and the latency targets below.
+
+**Not split across agents:** each step depends on the previous step's measurement, and steps 1–4 all touch `recipes.py`, `nodes.py` and the planner. Run it as one sequence on `main`, committing after each gate.
+
 ### Tasks
 
 - [x] **Decisions (user, 2026-10-12):** (1) summaries, comparisons, extractions and generated material cite the sections and pages they read; lookups keep the graded-passage rule and "not found" (in `CLAUDE.md`). (2) General knowledge: a clearly labeled local world-knowledge mode as a switch, off by default (`agent.world_knowledge`). (3) Document cards at ingest: on, as a switch (`ingest.enrich`).
 - [x] **M0: contracts on `main`.** Provider tool-call protocol + fake, types, config switches, trace keys, checkpointer, `tasks.jsonl` format, stub signatures, agent prompts in `scripts/agents/prompts/` (and the new shared files and dependency in `_rules.md`). Done 2026-10-12: `LLM.chat` checked live with `qwen3:14b` (a correct native tool call in 0.3 s with thinking off, 2.1 s on); `CardStore` (migration 4) and `ChunkIndex.parents_for_file` implemented; stubs `ingest/enrich.py`, `agent/catalog.py`, `agent/tools.py`, `agent/gateway.py`; prompts `cards.md`, `tools.md`, `taskeval.md`.
 - [x] **M1: foundations, three agents in parallel.** (a) Document cards at ingest + card store; (b) tools + gateway; (c) `tasks.jsonl` + key-facts judge + `eval run --repeat N` + router labels. Merged 2026-10-13; numbers in RESULTS.md, cards built for the real vault (47).
-- [ ] **M2: planner, recipes, transform.** Wired into the graph with the lookup path untouched. *Code and unit tests done 2026-10-13 (`agent/planner.py`, `agent/recipes.py`, `eval/task_runner.py`, `vaultmind eval tasks`). Tick it once the "done when" check below passes on the real models (steps in STATUS.md).*
-- [ ] **M3: ReAct loop, human-in-the-loop, verify.**
+- [ ] **M2: planner, recipes, transform.** Wired into the graph with the lookup path untouched. *Code and unit tests done 2026-10-13 (`agent/planner.py`, `agent/recipes.py`, `eval/task_runner.py`, `vaultmind eval tasks`). Tick it once the "done when" check below passes on the real models (steps in STATUS.md). 2026-10-14: runs live; lookup gate passes, router 0.84, task success 0.38 (whole-document answers too general); fixes and recorded runs pending (STATUS.md, "Next session"). Now done through the course correction above: steps 0–3.*
+- [ ] **M3: ReAct loop, human-in-the-loop, verify.** *Course correction steps 4–6: calculation in the answer call, human-in-the-loop, then a measured decision on whether the open loop is needed.*
 - [ ] **M4: retrieval upgrades** (component 10), each measured on CUAD and personal.
 - [ ] **M5: UI.** A live step list ("Reading Syllabus, pp. 1–12…"), approval and clarify cards, Summarize / Quiz me per file in the Library, the route and tool calls in the trace panel, section chips on summary answers, memory in Settings.
-- [ ] **Eval:** ~60 task items, half in Hebrew: list 5, summarize 10, compare 8, extract 8, transform 8, multi-step 15, ambiguous (should clarify) 6. Metrics: router accuracy, task success (key-facts judge, 3 repeats), citation precision, valid tool-call rate, steps per task, latency per task type, injection items where a document tries to trigger a tool call. CUAD and personal lookup numbers must hold within noise. *The set exists (63 items, 31 in Hebrew, gitignored; awaiting the user's review). `eval tasks` (M2) reports router accuracy, task success, clarify accuracy, forbidden rate and latency per task; citation precision, valid tool-call rate and steps come with M3.*
+- [ ] **Eval:** ~60 task items, half in Hebrew: list 5, summarize 10, compare 8, extract 8, transform 8, multi-step 15, ambiguous (should clarify) 6. Metrics: router accuracy, task success (key-facts judge, 3 repeats), citation precision, valid tool-call rate, steps per task, latency per task type, injection items where a document tries to trigger a tool call. CUAD and personal lookup numbers must hold within noise. *The set exists (63 items, 31 in Hebrew, gitignored; reviewed 2026-10-14, 208 key facts). `eval tasks` (M2) reports router accuracy, task success, clarify accuracy, forbidden rate and latency per task; citation precision, valid tool-call rate and steps come with M3.*
 
 | Milestone | Done when |
 |---|---|

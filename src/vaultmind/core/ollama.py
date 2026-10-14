@@ -17,6 +17,19 @@ _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|\Z)", re.DOTALL)
 
+# Scripts qwen3:14b drops words from when it writes Hebrew, mostly from English sources
+# (measured 2026-10-14): Arabic, Cyrillic, Thai, CJK, kana and Hangul. With `script_guard`
+# a free-form answer is requested as one JSON string whose pattern excludes them, so the
+# grammar never lets the model emit them; the string is decoded back as it streams.
+_FOREIGN_SCRIPTS = "Ѐ-ӿ؀-ۿ฀-๿ᄀ-ᇿ぀-ヿ㐀-鿿가-힯"
+GUARDED_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"answer": {"type": "string", "pattern": f"^[^{_FOREIGN_SCRIPTS}]*$"}},
+    "required": ["answer"],
+}
+_ANSWER_START = re.compile(r'\s*\{\s*"answer"\s*:\s*"')
+_JSON_STRING = json.JSONDecoder(strict=False)
+
 
 class OllamaUnavailableError(RuntimeError):
     """Ollama is not reachable, or the requested model is not pulled."""
@@ -34,6 +47,19 @@ def _is_connection_error(exc: BaseException) -> bool:
     )
 
 
+def _is_dropped_connection(exc: BaseException) -> bool:
+    """Ollama closed the connection mid-response (its model runner crashed or restarted)."""
+    return any(
+        cls.__module__.startswith("httpx") and cls.__name__ in {"ReadError", "RemoteProtocolError"}
+        for cls in type(exc).__mro__
+    )
+
+
+def _is_repeat_abort(exc: BaseException) -> bool:
+    """Ollama aborted a constrained answer that kept repeating one token."""
+    return isinstance(exc, ollama.ResponseError) and "repeat limit" in str(exc)
+
+
 def _is_missing_model(exc: BaseException) -> bool:
     return isinstance(exc, ollama.ResponseError) and exc.status_code == 404
 
@@ -47,6 +73,11 @@ def _ollama_errors(*, host: str, model: str) -> Iterator[None]:
         if _is_connection_error(exc):
             raise OllamaUnavailableError(
                 f"Cannot reach Ollama: is Ollama running at {host}?"
+            ) from exc
+        if _is_dropped_connection(exc):
+            raise OllamaUnavailableError(
+                f"Ollama at {host} stopped responding in the middle of an answer (its model "
+                "runner may have crashed). Try again."
             ) from exc
         if _is_missing_model(exc):
             raise OllamaUnavailableError(
@@ -94,6 +125,87 @@ def _turn(response: Any) -> AssistantTurn:
     return AssistantTurn(content, calls, message.get("thinking") or "")
 
 
+def _guarded_answer(content: str) -> str:
+    """The `answer` of a script-guarded response, even one cut off by the token limit; the raw
+    text if it isn't that JSON."""
+    return "".join(_guarded_stream([content]))
+
+
+def _guarded_stream(stream: Iterable[str]) -> Iterator[str]:
+    """Decode the `answer` string of a streamed `{"answer": "..."}` as it arrives.
+
+    Output that doesn't start like that object passes through unchanged."""
+    buffer = ""
+    state = "start"  # start -> answer -> done, or raw
+    for delta in stream:
+        if state == "done":
+            continue
+        if state == "raw":
+            yield delta
+            continue
+        buffer += delta
+        if state == "start":
+            match = _ANSWER_START.match(buffer)
+            if match is None:
+                if not buffer.lstrip() or _could_start_answer(buffer.lstrip()):
+                    continue  # still a prefix of the opening
+                state = "raw"
+                yield buffer
+                buffer = ""
+                continue
+            buffer = buffer[match.end() :]
+            state = "answer"
+        text, buffer, closed = _decode_partial(buffer)
+        if text:
+            yield text
+        if closed:
+            state = "done"
+    if state == "start" and buffer:
+        yield buffer
+
+
+def _could_start_answer(text: str) -> bool:
+    opening = '{"answer":"'
+    compact = re.sub(r"\s+", "", text)
+    return opening.startswith(compact) or compact.startswith(opening)
+
+
+def _decode_partial(raw: str) -> tuple[str, str, bool]:
+    """Decode a JSON string body up to the last complete escape: (text, rest, closed)."""
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == '"':
+            return _unescape(raw[:i]), "", True
+        if ch == "\\":
+            if i + 1 >= len(raw):
+                break
+            if raw[i + 1] != "u":
+                i += 2
+                continue
+            if i + 6 > len(raw):
+                break
+            if raw[i + 2 : i + 4].lower() in ("d8", "d9", "da", "db"):  # high surrogate
+                if i + 12 > len(raw):
+                    break
+                i += 12
+                continue
+            i += 6
+            continue
+        i += 1
+    return _unescape(raw[:i]), raw[i:], False
+
+
+def _unescape(raw: str) -> str:
+    if not raw:
+        return ""
+    try:
+        text, _ = _JSON_STRING.raw_decode(f'"{raw}"')
+    except json.JSONDecodeError:
+        return raw
+    return str(text)
+
+
 def _strip_thinking(stream: Iterable[str]) -> Iterator[str]:
     """Drop `<think>...</think>` spans from a token stream, even if tags span deltas."""
     buffer = ""
@@ -128,6 +240,8 @@ class OllamaLLM:
         num_ctx: int,
         keep_alive: str,
         think: bool = False,
+        script_guard: bool = False,
+        max_answer_tokens: int | None = None,
         client: Any | None = None,
     ) -> None:
         self.model_name = model
@@ -135,6 +249,10 @@ class OllamaLLM:
         self.num_ctx = num_ctx
         self.keep_alive = keep_alive
         self.think = think
+        self.script_guard = script_guard
+        # Free-form answers only: a looping model otherwise writes until the context is full
+        # (one compare ran 43 minutes, ~14k tokens, under the script guard).
+        self._answer_options = {"num_predict": max_answer_tokens} if max_answer_tokens else {}
         self._client = client if client is not None else ollama.Client(host=host)
 
     @classmethod
@@ -145,37 +263,81 @@ class OllamaLLM:
             num_ctx=cfg.models.num_ctx,
             keep_alive=cfg.ollama.keep_alive,
             think=cfg.models.think,
+            script_guard=cfg.models.script_guard,
+            max_answer_tokens=cfg.models.max_answer_tokens,
         )
 
     def generate(self, messages: Sequence[Message], *, schema: dict[str, Any] | None = None) -> str:
-        options: dict[str, Any] = {"num_ctx": self.num_ctx}
-        kwargs: dict[str, Any] = {"think": self.think}
         if schema is not None:
-            options["temperature"] = 0
-            kwargs["format"] = schema
-            kwargs["think"] = False
+            return self._generate(messages, schema, {"temperature": 0}, think=False)
+        if self.script_guard:
+            try:
+                content = self._generate(
+                    messages, GUARDED_SCHEMA, self._answer_options, think=self.think
+                )
+            except ollama.ResponseError as exc:
+                if not _is_repeat_abort(exc):
+                    raise
+                # The grammar kept the model in a loop; the unguarded answer beats none.
+                return self._generate_text(messages)
+            return _guarded_answer(_THINK_BLOCK.sub("", content).strip()).strip()
+        return self._generate_text(messages)
+
+    def _generate_text(self, messages: Sequence[Message]) -> str:
+        content = self._generate(messages, None, self._answer_options, think=self.think)
+        return _THINK_BLOCK.sub("", content).strip()
+
+    def _generate(
+        self,
+        messages: Sequence[Message],
+        schema: dict[str, Any] | None,
+        options: dict[str, Any],
+        *,
+        think: bool,
+    ) -> str:
+        kwargs: dict[str, Any] = {"format": schema} if schema is not None else {}
         with _ollama_errors(host=self.host, model=self.model_name):
             response = self._client.chat(
                 model=self.model_name,
                 messages=_wire(messages),
-                options=options,
+                options={"num_ctx": self.num_ctx, **options},
                 keep_alive=self.keep_alive,
+                think=think,
                 **kwargs,
             )
-        content = _content(response)
-        return content if schema is not None else _THINK_BLOCK.sub("", content).strip()
+        return _content(response)
 
     def stream(self, messages: Sequence[Message]) -> Iterator[str]:
+        if not self.script_guard:
+            yield from self._stream(messages, guarded=False)
+            return
+        sent = False
+        try:
+            for delta in self._stream(messages, guarded=True):
+                sent = True
+                yield delta
+        except ollama.ResponseError as exc:
+            if not _is_repeat_abort(exc):
+                raise
+            # Ollama stops a constrained answer that keeps repeating a token. Mid-answer, the
+            # text so far stands (the repeats were junk); before any text, retry unguarded.
+            if not sent:
+                yield from self._stream(messages, guarded=False)
+
+    def _stream(self, messages: Sequence[Message], *, guarded: bool) -> Iterator[str]:
+        kwargs: dict[str, Any] = {"format": GUARDED_SCHEMA} if guarded else {}
         with _ollama_errors(host=self.host, model=self.model_name):
             chunks = self._client.chat(
                 model=self.model_name,
                 messages=_wire(messages),
                 stream=True,
-                options={"num_ctx": self.num_ctx},
+                options={"num_ctx": self.num_ctx, **self._answer_options},
                 keep_alive=self.keep_alive,
                 think=self.think,
+                **kwargs,
             )
-            for delta in _strip_thinking(_content(c) for c in chunks):
+            deltas = _strip_thinking(_content(c) for c in chunks)
+            for delta in _guarded_stream(deltas) if guarded else deltas:
                 if delta:
                     yield delta
 

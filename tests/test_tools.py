@@ -422,6 +422,19 @@ def test_search_scoped_to_one_document(tmp_path: Path) -> None:
     assert "in Solution design checklist.md" in out.text
 
 
+def test_scoped_search_keeps_the_best_passages_of_a_compound_query(vault: Vault) -> None:
+    # Each passage matches a quarter of the query: under the 0.3 threshold, above the floor.
+    out = run(
+        vault.ctx,
+        "search",
+        query="final exam parking permits office hours lunch menu",
+        doc="design checklist",
+    )
+    assert [s.file_path.name for s in out.sources if s.file_path] == [
+        "Solution design checklist.md"
+    ]
+
+
 def test_search_without_results(vault: Vault) -> None:
     out = run(vault.ctx, "search", query="parking permits", doc="worksheet")
     assert (
@@ -533,11 +546,14 @@ def test_extract_retries_bad_json_then_gives_up(vault: Vault) -> None:
     assert "(could not extract)" in out.text
 
 
-def test_extract_without_passages_skips_the_llm(vault: Vault) -> None:
-    llm = FakeLLM()
+def test_extract_reads_the_document_even_when_no_passage_scores_well(vault: Vault) -> None:
+    # Field names ("warranty", "parties") score low on every passage, so extract doesn't
+    # threshold: the model reads the best passages and says "not found" itself.
+    llm = FakeLLM([{"warranty": {"value": "not found", "page": None}}])
     out = run(replace(vault.ctx, llm=llm), "extract", docs=["memo"], fields=["warranty"])
     assert out.text.splitlines()[2] == "| vendor memo.txt | not found |"
-    assert llm.calls == []
+    assert len(llm.calls) == 1
+    assert out.sources  # the passages it read are its sources
 
 
 def test_extract_limits() -> None:

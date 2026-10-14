@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from vaultmind.agent.baseline import Source, to_sources
 from vaultmind.agent.catalog import Catalog, CatalogEntry, summary_line
-from vaultmind.agent.guard import neutralize
+from vaultmind.agent.guard import neutralize, redact_injections
 from vaultmind.agent.retrieval import candidates, rerank
 from vaultmind.agent.types import ToolError
 from vaultmind.core.config import Config
@@ -218,6 +218,8 @@ CHARS_PER_TOKEN = 4  # the observation budget's estimate (`agent.observation_tok
 _PAGES = re.compile(r"\s*(\d+)\s*(?:[-\u2013]\s*(\d+)\s*)?")  # 3-5, also with an en dash
 SCOPE_OVERFETCH = 10  # scoped search looks at this many times the usual candidates
 SCOPE_MAX_CANDIDATES = 200
+SCOPE_FALLBACK = 3  # passages a scoped search keeps when none pass the rerank threshold
+SCOPE_FLOOR = 0.05  # ... if they score at least this (unrelated passages score ~0.01)
 EXTRACT_HITS_PER_FIELD = 3
 SUMMARY_RESERVE_TOKENS = 2048  # prompt, instructions and the answer, per summarize call
 SUMMARY_CHARS_PER_TOKEN = 3  # conservative: Hebrew tokenizes denser than English
@@ -278,7 +280,9 @@ def _ranges(numbers: Sequence[int]) -> str:
     return ", ".join(parts)
 
 
-def _hits(ctx: ToolContext, query: str, file_id: str | None) -> list[SearchHit]:
+def _hits(
+    ctx: ToolContext, query: str, file_id: str | None, *, threshold: bool = True
+) -> list[SearchHit]:
     """The vault search (candidates, then rerank and threshold), optionally kept to one file.
 
     Scoped search over-fetches candidates from the whole index, keeps the file's, and reranks
@@ -293,7 +297,15 @@ def _hits(ctx: ToolContext, query: str, file_id: str | None) -> list[SearchHit]:
     if file_id is not None:
         hits = [h for h in hits if h.chunk.file_id == file_id][: r.candidates]
     if r.rerank and ctx.reranker is not None:
-        hits = [h for h in rerank(query, hits, ctx.reranker) if h.score >= r.rerank_threshold]
+        ranked = rerank(query, hits, ctx.reranker)
+        if not threshold:
+            return ranked[: r.top_k]
+        hits = [h for h in ranked if h.score >= r.rerank_threshold]
+        if not hits and file_id is not None:
+            # The document is already chosen, so the threshold only filters. A compound
+            # focus ("governing law and liability cap") scores low on every passage, since
+            # each covers half of it: keep the best few rather than nothing.
+            hits = [h for h in ranked[:SCOPE_FALLBACK] if h.score >= SCOPE_FLOOR]
     return hits[: r.top_k]
 
 
@@ -516,7 +528,10 @@ def _map_reduce(ctx: ToolContext, entry: CatalogEntry, focus: str) -> ToolOutput
         SUMMARY_MIN_CHARS,
         (ctx.cfg.models.num_ctx - SUMMARY_RESERVE_TOKENS) * SUMMARY_CHARS_PER_TOKEN,
     )
-    batches = _batches([_section_block(p, budget) for p in parents], budget)
+    shown = parents
+    if ctx.cfg.agent.injection_guard:  # as for cards: a summary would launder planted text
+        shown = [replace(p, text=redact_injections(p.text)) for p in parents]
+    batches = _batches([_section_block(p, budget) for p in shown], budget)
     about = f", focusing on {focus}" if focus else ""
     if len(batches) == 1:
         summary = _map(ctx, entry, batches[0], "the whole text", "8-12", about)
@@ -596,7 +611,9 @@ def _extract_one(
 ) -> tuple[dict[str, str], list[Source]]:
     hits: dict[str, SearchHit] = {}
     for field in fields:
-        for hit in _hits(ctx, field, entry.file.id)[:EXTRACT_HITS_PER_FIELD]:
+        # No threshold: the document is chosen, and a one-word field ("parties") scores
+        # low on every passage. The model says "not found" when the value isn't there.
+        for hit in _hits(ctx, field, entry.file.id, threshold=False)[:EXTRACT_HITS_PER_FIELD]:
             hits.setdefault(hit.chunk.id, hit)
     if not hits:
         return {f: "not found" for f in fields}, []

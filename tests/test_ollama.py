@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Sequence
 from typing import Any
 
+import httpx
 import ollama
 import pytest
 
 from vaultmind.core.config import Config
-from vaultmind.core.ollama import OllamaEmbedder, OllamaLLM, OllamaUnavailableError
+from vaultmind.core.ollama import (
+    GUARDED_SCHEMA,
+    OllamaEmbedder,
+    OllamaLLM,
+    OllamaUnavailableError,
+)
 from vaultmind.core.providers import LLM, AssistantTurn, Embedder, Message, ToolCall, ToolSpec
 
 HOST = "http://127.0.0.1:11434"
@@ -183,6 +190,119 @@ def test_missing_model_suggests_pull() -> None:
     client = FakeClient(error=ollama.ResponseError('model "qwen3:14b" not found', 404))
     with pytest.raises(OllamaUnavailableError, match="ollama pull qwen3:14b"):
         make_llm(client).generate(MESSAGES)
+
+
+def test_connection_dropped_mid_stream_maps_to_unavailable() -> None:
+    class DroppingClient(FakeClient):
+        def _stream(self) -> Iterator[dict[str, Any]]:
+            yield {"message": {"role": "assistant", "content": "Half an"}}
+            raise httpx.ReadError("[WinError 10054] An existing connection was forcibly closed")
+
+    stream = make_llm(DroppingClient()).stream(MESSAGES)
+    assert next(stream) == "Half an"
+    with pytest.raises(OllamaUnavailableError, match="stopped responding"):
+        next(stream)
+
+
+def guarded_llm(client: FakeClient) -> OllamaLLM:
+    return OllamaLLM(
+        "qwen3:14b", host=HOST, num_ctx=8192, keep_alive="5m", script_guard=True, client=client
+    )
+
+
+def test_from_config_turns_the_script_guard_on_by_default() -> None:
+    assert OllamaLLM.from_config(Config()).script_guard is True
+    off = Config.model_validate({"models": {"script_guard": False}})
+    assert OllamaLLM.from_config(off).script_guard is False
+
+
+def test_answer_token_cap_applies_to_free_form_calls_only() -> None:
+    client = FakeClient(content='{"x": 1}', deltas=["a"])
+    llm = OllamaLLM(
+        "m", host=HOST, num_ctx=8192, keep_alive="5m", max_answer_tokens=99, client=client
+    )
+    llm.generate(MESSAGES)
+    list(llm.stream(MESSAGES))
+    llm.generate(MESSAGES, schema={"type": "object"})
+    assert [c["options"].get("num_predict") for c in client.chat_calls] == [99, 99, None]
+    assert OllamaLLM.from_config(Config())._answer_options == {"num_predict": 2048}
+
+
+def test_guarded_answer_cut_off_by_the_cap_keeps_its_text() -> None:
+    client = FakeClient(content='{"answer": "A long answer that was cut')
+    assert guarded_llm(client).generate(MESSAGES) == "A long answer that was cut"
+
+
+def test_script_guard_pattern_excludes_foreign_scripts_only() -> None:
+    pattern = re.compile(GUARDED_SCHEMA["properties"]["answer"]["pattern"])
+    assert pattern.fullmatch("סיכום של Workato [1]: Θ(m log n) — 85.22ms, ₪20.\n- נקודה")
+    for word in ("تصميم", "пользователя", "เครื่อง", "流程", "자동", "ティング"):
+        assert not pattern.fullmatch(f"סיכום {word}")
+
+
+def test_guarded_generate_sends_the_schema_and_returns_the_answer() -> None:
+    client = FakeClient(content='{"answer": "שלב [1]\\nשבת"}')
+    assert guarded_llm(client).generate(MESSAGES) == "שלב [1]\nשבת"
+    (call,) = client.chat_calls
+    assert call["format"] == GUARDED_SCHEMA
+    assert "temperature" not in call["options"]  # free-form sampling is unchanged
+
+
+def test_guarded_generate_keeps_a_callers_schema() -> None:
+    schema = {"type": "object", "properties": {"x": {"type": "integer"}}}
+    client = FakeClient(content='{"x": 1}')
+    assert guarded_llm(client).generate(MESSAGES, schema=schema) == '{"x": 1}'
+    assert client.chat_calls[0]["format"] == schema
+
+
+def test_guarded_stream_decodes_the_answer_across_deltas() -> None:
+    deltas = ['{"ans', 'wer": "Line', " one\\", 'nTwo \\"q\\" \\u05e9', "\\u05dc\\ud83d"]
+    deltas += ["\\ude00", ' end"', "}"]
+    client = FakeClient(deltas=deltas)
+    assert "".join(guarded_llm(client).stream(MESSAGES)) == 'Line one\nTwo "q" של😀 end'
+    assert client.chat_calls[0]["format"] == GUARDED_SCHEMA
+
+
+REPEAT_ABORT = ollama.ResponseError("prediction aborted, token repeat limit reached", -1)
+
+
+class LoopingClient(FakeClient):
+    """Aborts constrained (`format`) calls the way Ollama does; plain calls succeed."""
+
+    def __init__(self, *, after: Sequence[str] = ()) -> None:
+        super().__init__(content="plain answer", deltas=["plain ", "answer"])
+        self.after = list(after)  # guarded deltas sent before the abort
+
+    def chat(self, **kwargs: Any) -> Any:
+        if "format" not in kwargs:
+            return super().chat(**kwargs)
+        self.chat_calls.append(kwargs)
+        if not kwargs.get("stream"):
+            raise REPEAT_ABORT
+        return self._abort_after()
+
+    def _abort_after(self) -> Iterator[dict[str, Any]]:
+        for delta in self.after:
+            yield {"message": {"role": "assistant", "content": delta}}
+        raise REPEAT_ABORT
+
+
+def test_guarded_calls_retry_unguarded_when_ollama_aborts_a_loop() -> None:
+    client = LoopingClient()
+    assert guarded_llm(client).generate(MESSAGES) == "plain answer"
+    assert "".join(guarded_llm(client).stream(MESSAGES)) == "plain answer"
+    assert ["format" in c for c in client.chat_calls] == [True, False, True, False]
+
+
+def test_a_loop_aborted_mid_answer_keeps_the_text_so_far() -> None:
+    client = LoopingClient(after=['{"answer": "Half', " done --"])
+    assert "".join(guarded_llm(client).stream(MESSAGES)) == "Half done --"
+    assert len(client.chat_calls) == 1
+
+
+def test_guarded_stream_passes_plain_text_through() -> None:
+    client = FakeClient(deltas=["Not ", "JSON at all"])
+    assert "".join(guarded_llm(client).stream(MESSAGES)) == "Not JSON at all"
 
 
 def test_other_errors_propagate() -> None:

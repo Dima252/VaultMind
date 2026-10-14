@@ -183,6 +183,14 @@ def test_first_sentence() -> None:
     assert first_sentence("One thing. Two things.") == "One thing."
     assert first_sentence("Line one\nline two") == "Line one"
     assert first_sentence("version 2.5 is out") == "version 2.5 is out"
+    contract = "An agreement between Corvenna Cloud Services Inc. and Ostrel LLC. It runs 3 years."
+    assert (
+        first_sentence(contract)
+        == "An agreement between Corvenna Cloud Services Inc. and Ostrel LLC."
+    )
+    assert (
+        first_sentence("Signed by J. Smith, e.g. here. Next.") == "Signed by J. Smith, e.g. here."
+    )
     long = first_sentence("x" * 300)
     assert len(long) == 200 and long.endswith("...")
 

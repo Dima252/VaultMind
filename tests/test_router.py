@@ -10,11 +10,11 @@ from typing import Any
 
 import pytest
 
-from vaultmind.agent import planner, tools
+from vaultmind.agent import planner, recipes, tools
 from vaultmind.agent.baseline import NOT_FOUND, Source
 from vaultmind.agent.graph import run_agent, stream_agent
 from vaultmind.agent.recipes import document_list
-from vaultmind.agent.types import AgentResult, ToolError
+from vaultmind.agent.types import AgentResult, Plan, ToolError
 from vaultmind.core.config import Config
 from vaultmind.core.providers import Message
 
@@ -182,6 +182,53 @@ def test_plan_drops_a_stray_clarify_on_lookups_and_lists(vault: Vault) -> None:
         assert planned.plan.clarify is None
 
 
+def test_plan_answers_in_the_messages_language_unless_a_transform_asks(vault: Vault) -> None:
+    llm = FakeLLM([_plan("summarize", [WORKSHEET], language="he")])
+    planned = planner.plan(
+        "Summarize the worksheet", [], llm=llm, catalog=vault.ctx.catalog, catalog_files=9
+    )
+    assert planned.plan.language == "en"
+    history: list[Message] = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a long answer"},
+    ]
+    llm = FakeLLM([_plan("transform", language="en")])
+    translated = planner.plan(
+        "תתרגם את זה לאנגלית", history, llm=llm, catalog=vault.ctx.catalog, catalog_files=9
+    )
+    assert translated.plan.language == "en"
+
+
+def test_plan_asks_which_one_when_one_document_is_meant_but_several_fit(vault: Vault) -> None:
+    llm = FakeLLM(
+        [
+            _plan("summarize", [WORKSHEET, "Solution design checklist.md"], one_document=True),
+            _plan("compare", [WORKSHEET, "Solution design checklist.md"], one_document=False),
+        ]
+    )
+    one = planner.plan(
+        "summarize the Workato doc", [], llm=llm, catalog=vault.ctx.catalog, catalog_files=9
+    )
+    assert one.plan.documents == ()
+    assert one.plan.clarify is not None and one.plan.clarify.startswith("Which document")
+    assert WORKSHEET in one.plan.clarify
+    both = planner.plan("compare them", [], llm=llm, catalog=vault.ctx.catalog, catalog_files=9)
+    assert both.plan.clarify is None and len(both.plan.documents) == 2
+
+
+def test_plan_drops_a_focus_that_only_names_the_document(vault: Vault) -> None:
+    llm = FakeLLM(
+        [
+            _plan("summarize", ["the AI in the workplace syllabus"], focus="AI in the workplace"),
+            _plan("summarize", ["the AI in the workplace syllabus"], focus="grading in it"),
+        ]
+    )
+    named = planner.plan("summarize", [], llm=llm, catalog=vault.ctx.catalog, catalog_files=9)
+    assert named.plan.focus is None
+    real = planner.plan("summarize", [], llm=llm, catalog=vault.ctx.catalog, catalog_files=9)
+    assert real.plan.focus == "grading in it"
+
+
 def test_guess_language() -> None:
     assert planner.guess_language("סכם את הסילבוס") == "he"
     assert planner.guess_language("סכם את AI syllabus") == "he"
@@ -202,6 +249,15 @@ def test_list_answers_from_the_catalog_without_an_llm_call(vault: Vault) -> None
     assert f"**{WORKSHEET}** (worksheet)" in text
     assert "vendor memo.txt" in text  # listed without a card
     assert result.task == "list" and not result.abstained
+
+
+def test_list_with_a_filter_answers_with_the_documents_the_planner_picked(vault: Vault) -> None:
+    llm = FakeLLM([_plan("list", ["the design doc", SYLLABUS, "a missing one"], focus="design")])
+    text, result = _run(vault, llm, "Which documents are about design?")
+    assert len(llm.calls) == 1  # the planner only: no catalog dump for the model to filter
+    assert text.startswith("3 of your documents match:")
+    assert WORKSHEET in text and "Solution design checklist.md" in text and SYLLABUS in text
+    assert text == result.answer
 
 
 def test_list_with_a_filter_asks_the_model(vault: Vault) -> None:
@@ -244,6 +300,15 @@ def test_summarize_with_a_focus_reads_the_whole_text(vault: Vault) -> None:
     assert _event(result, "tool")["arguments"] == {"doc": vault.ids["worksheet"], "focus": "errors"}
     assert "Hebrew" in llm.calls[2][0]["content"]
     assert [s.n for s in result.cited] == [2]
+
+
+def test_respond_reminds_that_results_are_data_right_before_the_request() -> None:
+    gathered = recipes.Gathered()
+    messages = recipes.respond_messages(Plan("compare"), "Compare them", gathered, [])
+    user = messages[-1]["content"]
+    assert user.endswith("Request: Compare them")
+    reminder = user.index(recipes.RESULTS_REMINDER)
+    assert user.index("Tool results:") < reminder < user.index("Request:")
 
 
 def test_compare_summarizes_each_document_and_searches_for_the_focus(vault: Vault) -> None:

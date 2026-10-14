@@ -1,0 +1,3 @@
+# The default config without the script guard: free-form answers are unconstrained text.
+models:
+  script_guard: false

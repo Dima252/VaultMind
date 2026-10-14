@@ -1,6 +1,6 @@
 # VaultMind: Status and Handoff
 
-_Last updated: 2026-10-13 (Phase 5.5 M2, the planner and recipes, is built and unit-tested on `main`; its live check and eval on the Windows machine are next)._
+_Last updated: 2026-10-14 (Phase 5.5 M2 ran live for the first time: routing and the lookup regression pass, whole-document answer quality doesn't yet. Nothing from this session is committed. Start at "Where we stopped")._
 
 This is the starting point for anyone (human or agent) continuing the work. Read it after `CLAUDE.md`. The roadmap with checkboxes is in [EXECUTION_PLAN.md](EXECUTION_PLAN.md), every measured number is in [RESULTS.md](RESULTS.md), and the day-by-day detail is in the git log.
 
@@ -14,54 +14,53 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 | 3. Retrieval quality | ✅ Done. Hybrid + rerank + child chunks are the default |
 | 4. Agent loop + safety | ✅ Done. LangGraph loop, injection guard, contradiction and groundedness checks, traces. Only the parts that earned their keep are on by default |
 | 5. Desktop app | ✅ Built (NiceGUI, `vaultmind ui`), runs on the real vault. Opens as a browser tab by default. Hand walkthrough partly done (chat page only) |
-| 5.5 Document agent | 🟡 **In progress.** M0 (contracts) and M1 (document cards, tools + gateway, task eval) done. **M2 (planner + recipes) is code-complete with unit tests but has not run against the real models yet** |
+| 5.5 Document agent | 🟡 **In progress.** M0 (contracts) and M1 (document cards, tools + gateway, task eval) done. **M2 (planner + recipes) runs live: routing and the lookup gate pass; whole-document answer quality and the recorded `--repeat 3` runs are pending (2026-10-14, uncommitted)** |
 | 6–7 | ⬜ Not started |
 
-## Where we stopped (2026-10-13)
+## Where we stopped (2026-10-14)
 
-**Done, on the MacBook:** M2 code: the planner, routing, recipes, transform and the task eval runner. It was written and tested with fakes only, because the laptop has no Ollama, no vault and no personal task files. After the tidy-up that followed it, 885 unit tests pass on the Mac (the macOS watcher failures are fixed), and ruff and strict mypy pass. **Nothing in M2 has run against `qwen3:14b` yet,** so its prompts are untested on a real model.
+**M2 ran live on the Windows machine for the first time.** The planner, routes and lookup regression work; whole-document answer quality (summarize, compare, extract) doesn't yet. Nothing from this session is committed: the working tree holds all the changes below, and 906 unit tests, ruff and strict mypy pass on it.
 
 **What M2 does** (`agent/planner.py`, `agent/recipes.py`, new nodes in `agent/nodes.py`):
-- **Planner** (`plan` node, always first when `agent.router` is on and the card store is passed): one schema call with the catalog (`describe(agent.catalog_files)`), the last 6 chat messages and the message. It returns task, documents, focus, fields, language, steps and clarify. Mentions are resolved with `Catalog.resolve`.
-  - An ambiguous mention, a summary that names no document, or a comparison with fewer than two documents gets a clarifying question.
-  - A named document that doesn't exist gets "not found" plus its name.
-  - Unparseable output falls back to a lookup.
-  - A `transform` with no previous answer becomes a lookup.
-- **Routes:**
-  - `lookup` → the corrective graph, unchanged.
-  - `chat` → `direct`.
-  - `transform` → `respond`: reworks the previous answer and keeps its sources. The Engine passes the last assistant message's sources.
-  - `list | summarize | compare | extract | generate` → `recipe` → `respond`.
-  - `open` with named documents → the same recipe as generate (summaries + scoped search); with no documents → lookup.
-  - Clarify → the `human` node, which asks the question as the answer. M3 makes it an interrupt.
-- **Recipes** go through the `Gateway`, so observations are budgeted and guarded, and each call adds a `tool` trace event.
-  - list: the catalog itself, no LLM call. With a filter, one call over `list_documents`.
-  - summarize: the card summary (cheap), or map-reduce with a focus.
-  - compare: each document's summary, plus a scoped search when there's a focus.
-  - extract: the `extract` table. With no documents named, it picks up to 5 files from a vault search.
-  - generate / open: summaries + scoped search.
-  - Limits: 4 documents per recipe; the step budget is raised to fit.
-- **Respond:** one streamed call writes the answer in the planner's language. Sources are the sections the tools read, numbered `[n]` with file, section and page. The prompt asks it to name the documents it used and to cite only those numbers. If every tool failed, the answer is "not found".
-- **Eval:** `vaultmind eval tasks` (`eval/task_runner.py`) reports router accuracy, task success (key-facts score ≥ 0.75 and no forbidden string; clarify items succeed when the answer asks), clarify accuracy, forbidden rate, and latency p50/p95 overall and per task. `eval run` now routes through the planner too and adds `plan_p50_ms` and `lookup_route_rate` (on CUAD it should be ~1.0).
-- **Wiring:** the app (`Engine.ask`), `vaultmind ask` and both eval commands pass the card store. `agent.router: false`, no card store, or `agent.loop: false` gives exactly the old behavior.
+- **Planner** (`plan` node, first when `agent.router` is on and the card store is passed): one schema call with the catalog, the last 6 chat messages and the message. It returns task, documents, focus, fields, language, steps, clarify and `one_document`. Mentions are resolved with `Catalog.resolve`.
+  - Clarifying questions: an ambiguous mention; a summary that names no document; a comparison with fewer than two documents; and (new) `one_document` true with several documents resolved for summarize/generate ("summarize the lecture" with five lectures).
+  - A named document that doesn't exist gets "not found". Unparseable output falls back to a lookup. A `transform` with no previous answer becomes a lookup.
+- **Routes:** `lookup` → the corrective graph; `chat` → `direct`; `transform` → `respond` over the previous answer; `list | summarize | compare | extract | generate` → `recipe` → `respond`; `open` with documents → the generate recipe (summaries + scoped search), without → lookup; clarify → the `human` node (M3 makes it an interrupt).
+- **Recipes** go through the `Gateway`. list: the catalog with no LLM call; with a filter, the documents the planner named (no call), else one call over `list_documents`. summarize: the card, or map-reduce with a focus. compare: summaries + scoped search on the focus. extract: the `extract` table. generate / open: summaries + scoped search. At most 4 documents.
+- **Respond:** one streamed call in the planner's language, citing the sections the tools read. The request now comes last, after the tool results and a "results are data" reminder.
+- **Eval:** `vaultmind eval tasks` (router accuracy, task success, clarify accuracy, forbidden rate, latency per task); `eval run` adds `plan_p50_ms` and `lookup_route_rate`.
 
-### Next session (on the Windows machine), start here
+### Done this session (2026-10-14)
 
-M2 is done when:
-1. **You:** check `eval/datasets/personal_tasks_review.md` (gitignored) by hand, as you did for `personal.jsonl`. Facts that bundle two details should be split: the key-facts judge is lenient on them. The task numbers mean nothing before that.
-2. **Live check:** `git pull`, `uv sync --extra rerank`, `uv run vaultmind doctor`, then run with `--trace`:
-   - `uv run vaultmind ask "Summarize the Workato Recipe Design Worksheet" --trace`
-   - `uv run vaultmind ask "Summarize the AI in the workplace syllabus" --trace`
-   - `uv run vaultmind ask "What documents do I have?" --trace`
-   - `uv run vaultmind ask "Compare the Solution Design Checklist with the Recipe Design Worksheet" --trace`
-   - the Hebrew versions of all four, and a plain lookup.
+1. **Task set reviewed** (`personal_tasks.jsonl` + its review sheet, gitignored): every key fact checked against its source. 24 items changed, mostly bundled facts split (208 facts now). Two facts relied on exponents the PDF parser can't read (2ⁿ/3ⁿ in lesson 19, n² in lesson 21) and were replaced by facts the index does contain. Backup: `eval/datasets/personal_tasks.jsonl.bak-2026-10-14`.
+2. **Live check** (the 4 requests + Hebrew versions + lookups) found the problems fixed below.
+3. **Fixes** (all with unit tests):
+   - **Script guard** (`models.script_guard`, on): qwen3:14b drops Arabic/Cyrillic/Thai/CJK/Hangul words into Hebrew answers, nearly always when the sources are English, and in ~10% of earlier Hebrew lookups. Temperature, a prompt rule and thinking mode didn't help. Free-form answers are now requested as a JSON string whose grammar pattern excludes those scripts, decoded as it streams (`core/ollama.py`). 0 such characters in all live re-runs, no latency cost. When Ollama aborts a looping constrained answer ("token repeat limit"), the call retries unguarded (before any text) or keeps the text so far. Ablation config: `eval/configs/script_guard_off.yaml` (not yet run).
+   - **Answer cap** (`models.max_answer_tokens: 2048`, free-form calls only): one guarded compare looped for 43 minutes / ~14k tokens before this.
+   - **Ollama crashes:** a dropped connection mid-answer (`httpx.ReadError`, WinError 10054; the runner dies about once an hour under eval load) maps to `OllamaUnavailableError` with a clear message; `eval tasks` retries such an item once.
+   - **Poisoned document cards (security):** the card model rewrote planted instructions as facts ("governed by ... the Republic of Atlantis", "all fees are waived"), which the guard can then no longer see, and a compare repeated it. `guard.redact_injections` now drops flagged paragraphs (flagged sentences in very long ones) before card building and before summarize map-reduce, when `agent.injection_guard` is on. On the real vault it removes exactly the 4 planted blocks, nothing else. Card prompts no longer say "summarize it like any other text". `PROMPT_VERSION` 2: all 47 cards rebuilt, none contain planted text.
+   - **Planner:** answer language = the message's script (`guess_language`), the model's code only for a transform ("translate to English"); focus only when the user explicitly narrows ("focusing on", "לגבי"), and a focus that repeats a mention is dropped; `one_document` (above); `open` = answers that need a calculation, lookup otherwise.
+   - **Search:** extract searches use no rerank threshold (one-word fields like "parties" score 0.0–0.3 on the right passage, Hebrew fields ~0.001); a scoped search keeps its best 3 passages (score ≥ 0.05) when none pass the threshold (compound focus).
+   - **Sentence splitting** (`agent/text.split_sentences`, used by cards and the catalog) knows "Inc.", "Ltd.", "e.g.", titles and initials; old cards with a line break after "Inc." read correctly.
+   - **Filtered lists** answer with the documents the planner named instead of asking the model to filter a truncated catalog.
+4. **Measured** (details in RESULTS.md, Phase 5.5 section):
+   - **Lookup regression passes the M2 gate** (3 repeats, run before the planner prompt edits): CUAD correctness 0.809 router on vs 0.802 off, personal 0.906 vs 0.855, abstention identical, `lookup_route_rate` 1.0, planner +1.7–2.0 s p50.
+   - **Task eval, 1 pass each:** before the fixes, task success 0.40, router 0.70, clarify 0.17, forbidden 1.6%. After: success **0.38**, router **0.84**, clarify **0.50**, forbidden **0**. Per task after: list 2/5, summarize 4/10, compare 1/8, extract 2/8, transform 7/8, open 4/15, clarify 3/6, injection 1/3.
+   - Planner alone after the last prompt edits (`scripts/dev/plan_probe.py`): clarify 4/6, open routed 8/15, lookups stay lookups on CUAD 60/60 and personal 25/27.
 
-   Check the route, the tool calls, the citations and the latency. Then try the same in the app (`uv run vaultmind ui`), including a follow-up like "make it shorter" (transform).
-3. **Task eval:** `uv run vaultmind eval tasks --repeat 3`. Record router accuracy, task success and latency per task in RESULTS.md. Expect to tune `PLAN_SYSTEM` (planner.py) and `INSTRUCTIONS` / `RESPOND_SYSTEM` (recipes.py): no real model has seen them yet.
-4. **Lookups hold:** `uv run vaultmind eval run -d cuad -d personal --repeat 3`, with the default config against `-c eval/configs/router_off.yaml` (`agent.router: false`). Correctness and abstention must stay within noise. Note the added planner latency (`plan_p50_ms`) and any lookup misroutes (`lookup_route_rate`).
-5. If 1-4 pass, tick M2 in EXECUTION_PLAN.md and move to M3 (ReAct loop + `interrupt()` + verify).
+### Next session, start here
 
-Ollama must be running (`%LOCALAPPDATA%\Programs\Ollama\ollama.exe` if it isn't on PATH). The real vault already has its document cards (47, built 2026-10-13).
+**Plan changed (2026-10-14, end of session):** follow the course correction in EXECUTION_PLAN.md, Phase 5.5 ("read, don't route"). Steps 0–7 each have a measured gate. The diagnosis is that whole-document answers are built from the 8-line card and 2,000-token tool results, while most documents fit in context whole (median ~3.8K tokens). The list below is the fallback if step 1's gate fails; items 1–3 are folded into steps 1–3.
+
+1. **Fix the list regression** (5/5 → 2/5): for "which documents are about X" the planner no longer names the matches (probably since the "one document → leave documents empty" rule), so the recipe falls back to `list_documents`, whose output (~8,200 chars) is cut by `agent.observation_tokens` before the personal files. Planned fix, not applied: in `PLAN_SYSTEM`'s `documents` line add "For list with a description, every listed document that matches it". Check with `uv run python scripts/dev/plan_probe.py list`. Also consider a `list_documents` budget that fits the whole catalog.
+2. **Whole-document answers miss specific facts** (the main gap: summarize 4/10, compare 1/8, extract 2/8). The judge wants exact values ("20%", "Θ(m log n)", "USD 14,200"); card summaries are too general to carry them. Read the per-item answers in `eval/results/20261014-180050/` and try having summarize/compare read sections (a scoped search on the request, or map-reduce) instead of only the card; check what extract returns now that it reads passages. Watch latency (targets in EXECUTION_PLAN.md).
+3. **Clarify misses in Hebrew** ("סכם את המטלה", "סכם את השיעור באלגוריתמים"): `one_document` comes back false.
+4. **Open tasks** (4/15) need calculation: that's M3's tool loop with `calc`. Don't tune the M2 recipe further.
+5. Then the recorded runs: `uv run vaultmind eval tasks --repeat 3` → RESULTS.md, and the lookup regression again (the planner prompt changed since it passed): `uv run vaultmind eval run -d cuad -d personal -c config/default.yaml -c eval/configs/router_off.yaml --repeat 3`. Optionally the script-guard ablation (`-c eval/configs/script_guard_off.yaml`).
+6. **You:** the app walkthrough of a transform follow-up ("make it shorter") in `vaultmind ui`.
+7. Commit (nothing from 2026-10-14 is committed), tick M2 in EXECUTION_PLAN.md, move to M3.
+
+Ollama must be running (`%LOCALAPPDATA%\Programs\Ollama\ollama.exe` if not on PATH). A task-eval pass takes ~10–15 min with the GPU to itself; `vaultmind enrich` for all 47 cards ~20–40 min. Don't run live checks while an eval runs: they share the GPU and skew latency.
 
 ## What works today
 
@@ -115,8 +114,8 @@ Verified on the dev machine (Windows 11, RTX 5070 Ti 16 GB, Ollama with `qwen3:1
 | `agent/retrieval.py` | `search()`: vector or hybrid (vector + BM25, `rrf_fuse`, k=60) candidates → cross-encoder `rerank` → drop below `rerank_threshold` → top_k | Reranks on `embed_text` (title > section + text). Can return nothing (→ `NOT_FOUND` without an LLM call) |
 | `agent/baseline.py` | Linear RAG (`agent.loop: false`): `search()` → `to_sources()` (children, or parents with `small_to_big`) → numbered prompt → answer | `Source` (with `chunk_id`, `warnings`), `NOT_FOUND`, `is_abstention()`, `cited_sources()` |
 | `agent/graph.py` + `agent/nodes.py` | LangGraph: [plan] → lookup: analyze (standalone query from history; optional variants) → retrieve (each query, fused with RRF) → grade (rerank against the standalone question, threshold) → [rewrite] → [contradictions] → generate (streamed), not_found or direct → [groundedness]; or recipe / human / direct → respond. `stream_agent` yields tokens, then one `AgentResult` | Analyze is skipped when there's no history and `query_variants: 0` (the default). LangSmith tracing is forced off |
-| `agent/planner.py` | `plan()`: one schema call (catalog + history + message) → `Plan`; resolves mentions, asks when ambiguous, reports missing documents, falls back to lookup | M2. Prompt (`PLAN_SYSTEM`) not yet tried on the real model |
-| `agent/recipes.py` | `run()`: fixed tool sequences per task through the gateway → `Gathered`; `document_list()`; `respond_messages()` for the cited answer | M2. Prompts (`INSTRUCTIONS`, `RESPOND_SYSTEM`) not yet tried on the real model |
+| `agent/planner.py` | `plan()`: one schema call (catalog + history + message) → `Plan`; resolves mentions, asks when ambiguous, reports missing documents, falls back to lookup | M2. Prompt (`PLAN_SYSTEM`) tuned live 2026-10-14 (`scripts/dev/plan_probe.py` runs only the planner) |
+| `agent/recipes.py` | `run()`: fixed tool sequences per task through the gateway → `Gathered`; `document_list()`; `respond_messages()` for the cited answer | M2. Prompts (`INSTRUCTIONS`, `RESPOND_SYSTEM`) live since 2026-10-14; answers still too general for specific facts |
 | `agent/catalog.py` | `Catalog`: ready files + cards; `resolve(mention)` (exact id/name/title → fuzzy words → the multilingual reranker; close calls raise `AmbiguousDocument`, none `DocumentNotFound`); `describe()` for the planner | |
 | `agent/tools.py`, `agent/gateway.py` | 9 read-only tools (list_documents, document_card, outline, read, search with an optional document scope, summarize with cited sections, extract, calc, date_diff); `Gateway`: argument validation, step budget (`agent.max_steps`), repeat cache, observation budget (`agent.observation_tokens`), injection guard, approval for writes | Used by the recipes; the open loop is M3. No write or delete tools yet. Tool specs are flattened (see problems) |
 | `agent/guard.py` | `find_injections()`: 18 regexes, English and Hebrew, after NFKC normalization and zero-width stripping; `INJECTION_PATTERNS`. `build_answer_messages()`: delimited `<source>` blocks, neutralized template tokens, warning headers, the contradiction instruction | With the guard off, the prompt is exactly Phase 3's |
@@ -163,7 +162,7 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
 
 ## What's left, in order
 
-1. **Phase 5.5: document agent** (milestones in EXECUTION_PLAN.md): ~~decisions~~, ~~M0~~, ~~M1~~ → **M2 planner + recipes: live check + eval pending** (see "Next session" above) → M3 ReAct loop + human-in-the-loop + verify → M4 retrieval upgrades → M5 UI.
+1. **Phase 5.5: document agent** (milestones in EXECUTION_PLAN.md): ~~decisions~~, ~~M0~~, ~~M1~~ → **M2 planner + recipes: quality fixes + recorded runs pending** (see "Next session" above) → M3 ReAct loop + human-in-the-loop + verify → M4 retrieval upgrades → M5 UI.
 2. **Finish the hand walkthrough** of the app: drop a PDF in, ask, open a citation, open the trace, export, change a setting. Only the chat page has been tried by hand so far.
 3. **Phase 6: hardening** (tasks in EXECUTION_PLAN.md): network-blocked test, telemetry audit, launch token (other local programs can use the app today), atomic re-index, Ollama-down recovery, resumable ingestion, edge-case files, the secret/PII scanner. OCR needs a decision (new dependency + model download; offline Hebrew handwriting OCR is weak).
 4. **Phase 7: packaging and showcase.** One-command install, an optional Windows build, a demo GIF, the results write-up in the README, CV bullets from RESULTS.md.
@@ -176,8 +175,11 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
 
 ## Known limitations
 
-- **Document agent (M2, from writing it, not yet from use):**
-  - The planner adds one LLM call to every message, lookups included (unmeasured; analyze took ~0.5 s). `qwen3:4b` for the planner is an option to measure.
+- **Document agent (M2, measured 2026-10-14):**
+  - The planner adds one LLM call to every message, lookups included: +1.7–2.0 s p50 on lookups. `qwen3:4b` for the planner is an option to measure.
+  - Card-based summaries and compares are too general for specific facts (numbers, percentages, complexities): the main M2 quality gap.
+  - qwen3:14b's Hebrew is weak when it writes from English sources: besides the foreign-script words (now blocked by `models.script_guard`) it coins wrong Hebrew words and drops Latin fragments. A model with stronger Hebrew is worth measuring.
+  - Ollama 0.40.3's model runner crashes about once an hour under eval load (connection reset mid-answer); it restarts by itself.
   - Lookups ignore the documents the planner resolved: no search scoped to a named file yet (a candidate for M4).
   - Nothing reads `agent.world_knowledge` or `agent.think_open` yet (M3).
   - A clarifying question is just the answer. The user's reply is a new message the planner reads with the history; the `interrupt()` flow is M3.
@@ -203,7 +205,7 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
   - Highlighting misses some math-heavy slides (4 of 151 real chunks) and marks whole lines for right-to-left matches.
   - The privacy badge covers the app's process tree only; Ollama is a separate process.
   - Other programs on the same machine can use the app (no launch token yet, Phase 6). Other websites are refused.
-- **Parsing:** code fences are tracked per PDF page; setext (`===`/`---`) headings aren't recognized; sentence splitting doesn't know abbreviations; PDF headings are only detected when their font is larger. UTF-8 only, no OCR (Phase 6).
+- **Parsing:** code fences are tracked per PDF page; setext (`===`/`---`) headings aren't recognized; sentence splitting knows only a short abbreviation list (`agent/text.py`); PDF headings are only detected when their font is larger. UTF-8 only, no OCR (Phase 6).
 - **Hebrew parsing:** the bidi pass is a heuristic.
   - Formula-only lines on Hebrew pages are read left to right.
   - Side-by-side text boxes on one baseline merge into one row.

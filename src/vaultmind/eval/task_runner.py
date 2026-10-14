@@ -16,6 +16,7 @@ from pathlib import Path
 from vaultmind.agent.graph import run_agent
 from vaultmind.agent.types import TASKS
 from vaultmind.core.config import Config
+from vaultmind.core.ollama import OllamaUnavailableError
 from vaultmind.core.providers import LLM, Embedder, Reranker
 from vaultmind.eval.judge import JudgeError, judge_clarify, judge_key_facts
 from vaultmind.eval.metrics import TASK_SUCCESS_THRESHOLD, percentile, router_accuracy
@@ -36,6 +37,9 @@ TASK_METRIC_NAMES: tuple[str, ...] = (
     "total_p95_ms",
     *(f"p50_ms:{t}" for t in TASKS),
 )
+
+
+ITEM_ATTEMPTS = 2  # a run that loses Ollama mid-item retries it once
 
 
 @dataclass(frozen=True)
@@ -86,17 +90,26 @@ def run_tasks(
     results: list[TaskResult] = []
     for item in items:
         start = time.perf_counter()
-        result = run_agent(
-            item.request,
-            cfg,
-            llm=llm,
-            embedder=embedder,
-            index=index,
-            registry=registry,
-            reranker=reranker,
-            history=[{"role": t.role, "content": t.content} for t in item.history],
-            cards=cards,
-        )
+        for attempt in range(1, ITEM_ATTEMPTS + 1):
+            try:
+                result = run_agent(
+                    item.request,
+                    cfg,
+                    llm=llm,
+                    embedder=embedder,
+                    index=index,
+                    registry=registry,
+                    reranker=reranker,
+                    history=[{"role": t.role, "content": t.content} for t in item.history],
+                    cards=cards,
+                )
+                break
+            except OllamaUnavailableError:
+                # Ollama's model runner crashes about once an hour under eval load and
+                # restarts by itself; one retry keeps a long run alive.
+                if attempt == ITEM_ATTEMPTS:
+                    raise
+                start = time.perf_counter()
         total_ms = (time.perf_counter() - start) * 1000.0
         answer = result.answer.strip()
         scored = TaskResult(

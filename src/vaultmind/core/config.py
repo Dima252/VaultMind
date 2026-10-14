@@ -35,6 +35,8 @@ class ModelsConfig(_Section):
     reranker: str = "BAAI/bge-reranker-v2-m3"
     num_ctx: int = Field(default=16384, gt=0)
     think: bool = False
+    script_guard: bool = True
+    max_answer_tokens: int = Field(default=2048, gt=0)
 
 
 class ChunkingConfig(_Section):

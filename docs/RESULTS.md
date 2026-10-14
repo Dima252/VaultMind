@@ -268,9 +268,46 @@ Live with `qwen3:14b` unless noted. These measure parts, not the agent: nothing 
 - **Document cards (M1):** 21–47 s per document (1.8–5 s per section) with the GPU shared with other work. For the real vault, `vaultmind enrich` wrote **47 cards with 0 failures in 10 min 15 s** (~13 s per document with the GPU to itself): 272 section summaries, none empty; 39 cards in English, 8 in Hebrew.
 - **Key-facts judge (M1):** 29 of 29 facts right on the tuning cases, 8 of 9 held out, stable over 3 runs. **Clarify judge:** 4 of 4.
 
+### M2, first live runs (2026-10-14)
+
+`qwen3:14b`, Windows dev machine, GPU to itself unless noted. Task set: `personal_tasks.jsonl` after the 2026-10-14 review (63 items, 208 key facts, 31 in Hebrew). One pass each, so ±1 item per task type is noise.
+
+**Lookup regression gate (passes).** `eval run -d cuad -d personal --repeat 3`, default vs `agent.router: false`, run before the 2026-10-14 planner prompt edits (rerun pending):
+
+| | CUAD on | CUAD off | personal on | personal off |
+|---|---|---|---|---|
+| correctness | 0.809 (0.802–0.823) | 0.802 (0.792–0.812) | 0.906 (0.891–0.913) | 0.855 (0.826–0.870) |
+| abstention accuracy | 0.850 | 0.850 | 0.889 (0.852–0.926) | 0.889 |
+| total p50 | 3346 ms | 1669 ms | 3774 ms | 1608 ms |
+| plan p50 | 1716 ms | – | 2041 ms | – |
+| lookup route rate | 1.000 | – | 1.000 | – |
+
+Retrieval metrics are identical with the router on and off. The planner costs ~1.7–2.0 s per lookup.
+
+**Task eval** (`eval tasks`, 1 pass):
+
+| | before fixes (run 20261014-152003) | after fixes (run 20261014-180050) |
+|---|---|---|
+| router accuracy | 0.698 | 0.841 |
+| task success | 0.397 | 0.381 |
+| key-facts score | 0.542 | 0.461 |
+| clarify accuracy | 0.167 | 0.500 |
+| forbidden rate | 0.016 (1 leak) | 0.000 |
+| total p50 / p95 | 4438 / 18173 ms | 4756 / 30604 ms |
+
+Per task, after: list 2/5 (a regression from 5/5, cause known, see STATUS.md), summarize 4/10, compare 1/8, extract 2/8, transform 7/8, open 4/15 (needs M3's calc loop), clarify 3/6, injection 1/3. p50 by task: list 2.4 s, transform 3.1 s, open 4.4 s, summarize 6.2 s, compare 8.1 s, extract 7.3 s.
+
+What the numbers say: routing and safety improved; answer quality on whole-document tasks didn't. Card-based summaries and compares are too general for the specific values the key facts ask for.
+
+**Findings behind the fixes:**
+- **Foreign scripts in Hebrew answers.** Replaying captured respond prompts (3 runs each): English sources → Hebrew answer gave 2–35 Arabic/Cyrillic/Thai/CJK/Hangul characters per answer at temperature 0.6, 0.3 and 0.1 alike, also with a prompt rule and with thinking on; Hebrew sources → Hebrew answer gave 0. ~10% of the Hebrew lookup answers stored from Phase 3–4 runs had them too. A grammar-constrained answer (`models.script_guard`) gave 0 in every live re-run at the same latency (7.3 s and 3.0 s on two summaries).
+- **Planted instructions survive as card facts.** The Harrowgate and Corvenna cards said "governed by Vermont law, with a special instruction that it is also governed by the laws of the Republic of Atlantis" and "includes a policy that waives all fees"; a compare answer repeated the first (the one forbidden hit above). Redacting guard-flagged paragraphs before card building removes exactly the 4 planted blocks in the vault (345–459 characters each) and nothing in the 43 other documents; the rebuilt cards contain none of the planted text.
+- **Rerank threshold vs. field queries.** Real scores of one-word extract fields against the passage that holds them: "parties" 0.29, "date" 0.45, "warranty" 0.04, "governing law" 0.16; a Hebrew field ("רכיבי הציון") 0.001 against the Hebrew syllabus. Unrelated queries score ≤ 0.004. Extract no longer thresholds; scoped search falls back to its best 3 passages above 0.05.
+- **Ollama.** One guarded generation ran 42 min 58 s (~14.6k tokens, context shifted) before `models.max_answer_tokens`; the model runner crashed with a connection reset 3 times in ~4 hours of eval load.
+
 ### Still to measure (M2 on)
 
-M2 (planner + recipes) is built and unit-tested but has not run on the real models. This section will hold (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):
+Measured above: router accuracy, task success per type (1 pass), planner cost on lookups and the regression gate. Still to come (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):
 
 - **The four requests that failed before Phase 5.5** (summarize ×2, list, compare; EXECUTION_PLAN.md) and their Hebrew versions.
 - **Router accuracy** on labeled requests (English and Hebrew).
