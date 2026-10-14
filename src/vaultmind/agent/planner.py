@@ -71,6 +71,9 @@ The assistant works only over the user's own documents, listed below. Return JSO
 - language: the ISO 639-1 code of the language to answer in: the language the user
   wrote in ("en", "he"), or the one a transform asks for ("translate to English": "en").
 - steps: 1 to 3 short steps describing what you will do, in the user's language.
+- calculate: true when the answer needs arithmetic or counting days or weeks (a total,
+  a difference, a percentage, a share, a date some days before another), whatever the
+  task; otherwise false.
 - one_document: true when the message means a single document ("the lecture", "the
   contract", "it"), false when it means several or names none.
 - clarify: a short question to ask the user when the message can't be acted on without
@@ -117,6 +120,7 @@ def plan_schema() -> dict[str, Any]:
             "steps": {"type": "array", "items": {"type": "string"}},
             "clarify": {"type": "string"},
             "one_document": {"type": "boolean"},
+            "calculate": {"type": "boolean"},
         },
         "required": [
             "task",
@@ -127,6 +131,7 @@ def plan_schema() -> dict[str, Any]:
             "steps",
             "clarify",
             "one_document",
+            "calculate",
         ],
     }
 
@@ -197,6 +202,7 @@ def _parse(raw: str, fallback_language: str) -> Plan:
         clarify=clarify or None,
         focus=_focus(clean(data.get("focus")), () if task == "list" else mentions),
         fields=_texts(data.get("fields"), MAX_FIELDS),
+        calculate=task == "open" or data.get("calculate") is True,
     )
 
 

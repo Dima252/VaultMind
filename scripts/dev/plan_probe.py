@@ -39,14 +39,14 @@ def main(arg: str) -> None:
         if arg == "--lookups":
             for name in ("cuad", "personal"):
                 rows = _rows(DATASETS / f"{name}.jsonl")
-                off = [
-                    (p.task, r["question"][:90])
-                    for r in rows
-                    if (p := run(r["question"])).task != "lookup"
-                ]
-                print(f"{name}: {len(rows) - len(off)}/{len(rows)} lookup")
+                plans = [(run(r["question"]), r["question"][:90]) for r in rows]
+                off = [(p.task, q) for p, q in plans if p.task != "lookup"]
+                calc = [q for p, q in plans if p.calculate]
+                print(f"{name}: {len(rows) - len(off)}/{len(rows)} lookup, {len(calc)} calculate")
                 for task, q in off:
                     print(f"    {task:9} {q}")
+                for q in calc:
+                    print(f"    calculate {q}")
             return
 
         items = [

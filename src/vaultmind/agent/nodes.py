@@ -1,8 +1,9 @@
 """Nodes, routing and prompts of the agent graph (`agent/graph.py`).
 
 Each node takes the graph state plus the run's dependencies, returns a partial state update and
-appends exactly one `TraceEvent` (data keys per `agent/types.py`); the recipe node also appends
-one `tool` event per tool call, before its own. Text that reaches the user is sent through
+appends exactly one `TraceEvent` (data keys per `agent/types.py`); the recipe node, and generate
+and respond on an open task (calculations), also append one `tool` event per tool call, before
+their own. Text that reaches the user is sent through
 LangGraph's stream writer as it is produced.
 """
 
@@ -16,7 +17,7 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from langgraph.config import get_stream_writer
 
-from vaultmind.agent import planner, recipes
+from vaultmind.agent import calculate, planner, recipes
 from vaultmind.agent.baseline import NOT_FOUND, Source, is_abstention, to_sources
 from vaultmind.agent.catalog import Catalog
 from vaultmind.agent.checks import CheckError, check_groundedness, detect_contradictions
@@ -24,7 +25,7 @@ from vaultmind.agent.gateway import Gateway
 from vaultmind.agent.guard import build_answer_messages, find_injections
 from vaultmind.agent.retrieval import candidates, rerank, rrf_fuse
 from vaultmind.agent.text import clean, parse_json
-from vaultmind.agent.tools import ToolContext, document_tokens
+from vaultmind.agent.tools import Tool, ToolContext, default_tools, document_tokens
 from vaultmind.agent.types import (
     AgentResult,
     AmbiguousDocument,
@@ -267,6 +268,7 @@ def respond(state: AgentState, deps: Deps) -> Update:
     history = state["history"][-RESPOND_HISTORY_TURNS:]
     gathered = state["gathered"]
     sources: list[Source] = []
+    events: list[TraceEvent] = []
     if p.task == "transform":
         sources = state["previous_sources"]
         messages: list[Message] = [
@@ -284,6 +286,7 @@ def respond(state: AgentState, deps: Deps) -> Update:
     else:
         sources = gathered.sources()
         messages = recipes.respond_messages(p, state["question"], gathered, sources, history)
+        messages, events = _with_calculations(state, deps, messages)
         answer = _stream(deps.llm, messages)
     sources = _flag(sources, deps.cfg)
     abstained = is_abstention(answer)
@@ -292,7 +295,7 @@ def respond(state: AgentState, deps: Deps) -> Update:
         "answer": answer,
         "abstained": abstained,
         "sources": sources,
-        "trace": [_event("respond", start, data)],
+        "trace": [*events, _event("respond", start, data)],
     }
 
 
@@ -469,10 +472,12 @@ def generate(state: AgentState, deps: Deps) -> Update:
         history=state["history"],
         contradictions=state["contradictions"],
     )
+    messages, events = _with_calculations(state, deps, messages)
     answer = _stream(deps.llm, messages)
     abstained = is_abstention(answer)
     data = {"sources": [s.n for s in sources], "abstained": abstained}
-    return {"answer": answer, "abstained": abstained, "trace": [_event("generate", start, data)]}
+    trace = [*events, _event("generate", start, data)]
+    return {"answer": answer, "abstained": abstained, "trace": trace}
 
 
 def not_found(state: AgentState, deps: Deps) -> Update:
@@ -630,7 +635,29 @@ def read_budget(cfg: Config) -> int:
     return max(0, min(cfg.agent.read_budget_tokens, room))
 
 
-def _gateway(deps: Deps) -> Gateway:
+def _with_calculations(
+    state: AgentState, deps: Deps, messages: list[Message]
+) -> tuple[list[Message], list[TraceEvent]]:
+    """When the plan needs a calculation, `messages` with the calc / date_diff results added
+    to the last one."""
+    p = state["plan"]
+    if not deps.cfg.agent.calculate or p is None or not p.calculate or deps.catalog is None:
+        return messages, []
+    events: list[TraceEvent] = []
+    gateway = _gateway(deps, tools=[t for t in default_tools() if t.name in calculate.CALC_TOOLS])
+    results = calculate.calculate(
+        deps.llm,
+        messages[-1]["content"],
+        gateway,
+        on_result=lambda r: events.append(_tool_event(r)),
+    )
+    if not (added := calculate.note(results)):
+        return messages, events
+    last: Message = {"role": "user", "content": f"{messages[-1]['content']}\n\n{added}"}
+    return [*messages[:-1], last], events
+
+
+def _gateway(deps: Deps, tools: list[Tool] | None = None) -> Gateway:
     """A gateway for one recipe: its step budget fits the longest recipe."""
     if deps.cards is None or deps.catalog is None:
         raise ValueError("tools need the card store and the catalog")
@@ -647,7 +674,7 @@ def _gateway(deps: Deps) -> Gateway:
         deps.cards,
         deps.catalog,
     )
-    return Gateway(ctx)
+    return Gateway(ctx, tools)
 
 
 def _tool_event(result: ToolResult) -> TraceEvent:

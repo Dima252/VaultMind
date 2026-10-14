@@ -18,7 +18,7 @@ from vaultmind.agent.types import AgentResult, Plan, ToolError
 from vaultmind.core.config import Config
 from vaultmind.core.providers import Message
 
-from .fakes import FakeLLM, FakeReranker
+from .fakes import FakeLLM, FakeReranker, tool_turn
 from .test_tools import Vault, build_vault
 
 WORKSHEET = "Workato recipe design worksheet.docx"
@@ -516,6 +516,48 @@ def test_open_with_documents_reads_them(vault: Vault) -> None:
     names = [e.data["name"] for e in result.trace if e.node == "tool"]
     assert names == ["summarize", "search"]
     assert _nodes(result)[-1] == "respond"
+
+
+def test_open_with_documents_calculates_before_the_answer(vault: Vault) -> None:
+    llm = FakeLLM(
+        [_plan("open", ["the AI syllabus"]), "The exam is 60 of 100 points [3]."],
+        turns=[tool_turn("calc", expression="0.6 * 100"), "done"],
+    )
+    _, result = _run(vault, llm, "How many points is the final exam out of 100?")
+    names = [e.data["name"] for e in result.trace if e.node == "tool"]
+    assert names == ["read", "calc"]
+    user = llm.calls[-1][-1]["content"]
+    assert user.endswith("each step that leads to them:\n- 0.6 * 100 = 60")
+    assert "How many points is the final exam" in llm.chat_calls[0][0][1]["content"]
+
+
+def test_open_without_documents_calculates_in_the_lookup(vault: Vault) -> None:
+    llm = FakeLLM(
+        [_plan("open"), "Sixty percent [1]."],
+        turns=[tool_turn("calc", expression="100 - 60"), "done"],
+    )
+    _, result = _run(vault, llm, "final exam counts for")
+    assert [n for n in _nodes(result) if n in ("tool", "generate")] == ["tool", "generate"]
+    assert llm.calls[-1][-1]["content"].endswith("- 100 - 60 = 40")
+
+
+def test_a_lookup_the_planner_says_needs_a_calculation_gets_one(vault: Vault) -> None:
+    llm = FakeLLM(
+        [_plan("lookup", calculate=True), "Forty [1]."],
+        turns=[tool_turn("calc", expression="100 - 60"), "done"],
+    )
+    _, result = _run(vault, llm, "final exam counts for")
+    assert result.task == "lookup"
+    assert llm.calls[-1][-1]["content"].endswith("- 100 - 60 = 40")
+
+
+def test_no_calculation_outside_open_tasks_or_with_it_off(vault: Vault) -> None:
+    llm = FakeLLM([_plan("summarize", ["the AI syllabus"]), "A course [1]."])
+    _run(vault, llm, "Summarize the syllabus")
+    assert llm.chat_calls == []
+    llm = FakeLLM([_plan("open", ["the AI syllabus"]), "Week two [2]."])
+    _run(vault, llm, "What comes after prompts?", cfg=_cfg(vault.root, calculate=False))
+    assert llm.chat_calls == []
 
 
 def test_transform_reworks_the_previous_answer_and_keeps_its_sources(vault: Vault) -> None:

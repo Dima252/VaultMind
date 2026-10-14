@@ -111,6 +111,7 @@ class Plan:
     clarify: str | None = None  # ask the user this instead of acting
     focus: str | None = None  # a topic the request narrows to ("grading", "termination")
     fields: tuple[str, ...] = ()  # extract: what to pull out of each document
+    calculate: bool = False  # the answer needs arithmetic or date counting (any task)
 
 
 @dataclass(frozen=True)

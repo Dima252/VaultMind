@@ -62,6 +62,10 @@ agent:
                                 # the request (one call per ~13K tokens of text) instead of their
                                 # card; extract reads its documents the same way instead of
                                 # using the extract tool. Needs read_budget_tokens > 0
+  calculate: true               # answers that need arithmetic or date counting (the planner
+                                # says so, on any route) first get a short tool phase with
+                                # calc and date_diff; the exact results go into the answer
+                                # prompt (~1-3 s more)
   think_open: true              # let the model reason before open-task tool calls (slower).
                                 # For the ReAct loop (Phase 5.5 M3); not wired yet
 

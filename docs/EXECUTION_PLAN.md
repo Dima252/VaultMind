@@ -301,7 +301,7 @@ Cards stay, but only for the catalog, resolving documents and "which document co
    - Carry over the open problems: Hebrew clarify misses ("סכם את המטלה" should ask which assignment). Check with `scripts/dev/plan_probe.py`.
    - **Gate:** routing ≥ 0.90 on the mapped labels, clarify ≥ 4/6, lookups stay lookups (CUAD 60/60, personal ≥ 25/27 in `plan_probe`), and task success no worse than after steps 1–2.
 
-4. **Calculation in the answer call** (replaces most of M3's ReAct loop).
+4. 🟡 **Calculation in the answer call** (replaces most of M3's ReAct loop). *Built 2026-10-14 as a calc phase before the streamed answer (`agent/calculate.py`, `agent.calculate`, planner flag `calculate`): open 4.3 → 6.3/15, every call valid, gate (≥ 9/15) not met. The planner doesn't flag four calculations it routes as lookups; running the phase on every answer would catch them at ~0.5-1 s per lookup (decision pending, RESULTS.md).*
    - When the plan says `calculate`, the answer call (the `documents` respond call, or `generate` on the lookup path) gets `calc` and `date_diff` as native tools through the gateway. It runs non-streamed tool turns, bounded by `agent.max_steps` (lower it to 3), then streams the final answer.
    - Without `calculate`, both paths are exactly as before, so the measured lookup path doesn't change.
    - Measure: `--task open --repeat 3`, plus the valid tool-call rate and steps per task.

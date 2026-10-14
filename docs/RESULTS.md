@@ -391,6 +391,34 @@ After steps 1-2 the whole-document tasks share one reading path and differ only 
 - **list-05** (Hebrew "documents about renting a warehouse") lists the Wrenfield lease but not its English abstract in every run (was 3/3). Letting the answer call filter the whole catalog instead of the planner's picks didn't fix it (list 4/5 either way, run 20261014-214402) and made "What documents do I have?" take 13.8 s instead of 1.5 s, so the planner's picks stay.
 - **open:** open-06 is the same addition error as in step 1 (0/3; step 4), open-15 the judge-noise item; the others moved by one run.
 
+**Lookup regression with the step 3 planner (passes).** `eval run -d cuad -d personal -c config/default.yaml -c eval/configs/router_off.yaml --repeat 3`, run 20261014-215214:
+
+| | CUAD on | CUAD off | personal on | personal off |
+|---|---|---|---|---|
+| correctness | 0.806 (0.802–0.812) | 0.792 (0.781–0.802) | 0.884 (0.870–0.913) | 0.906 (0.891–0.913) |
+| abstention accuracy | 0.844 | 0.839 | 0.877 | 0.901 |
+| lookup route rate | 1.000 | – | 0.926 | – |
+| plan p50 | 1822 ms | – | 1981 ms | – |
+| total p50 | 3476 ms | 1646 ms | 3542 ms | 1615 ms |
+
+Retrieval metrics are identical on and off. The two personal questions the planner now sends to `open` (a calculation: Kruskal vs Prim running times, a Ford-Fulkerson count) got the same verdicts as with the router off; the personal gap is three items that went the other way in one of three runs each (two lost, one gained), i.e. generation noise, under one item of 27 on average.
+
+### Course correction step 4: calculations before the answer (2026-10-14)
+
+`agent.calculate: true` (`agent/calculate.py`): when the plan needs a calculation, a short `chat` phase with only `calc` and `date_diff` (through the gateway, thinking off, up to 3 turns) works out what the request needs; the exact results go into the answer prompt, which stays the streamed, script-guarded call. 4a ran it for the `open` task only; 4b adds a planner flag `calculate` (any route, also lookups) and asks the answer to show the facts and steps behind each result. Open items, 3 repeats:
+
+| | step 3 (run 20261014-211109) | 4a: open task only (-223019) | 4b: + planner flag, show steps (-224418) |
+|---|---|---|---|
+| open success | 4.3/15 | 5.0/15 | **6.3/15** |
+| open key-facts score | 0.502 | 0.515 | **0.574** |
+| p50 / p95 | 3.9 / – s | 4.1 / 15.5 s | 4.5 / 9.5 s |
+
+**Gate (open ≥ 9/15): not met.** Where the phase runs it works: every call made was valid, and open-04 (3/3), open-07 (3/3), open-06 (the 84,000 + 30 × 360 price, 0/3 → 2/3) and open-02 (a lookup with `date_diff`, 3/3) now compute right. Answers given only the results stated the total alone ("$94,800") and lost the judge's facts for the parts; asking for the steps fixed that. What is left:
+- **The flag doesn't fire on four calculations the planner routes as lookups:** open-08 (the last day to send notice, N days before a date), open-11 (Net Receipts at which royalties pass the guarantee), open-12 (a share of a total time), open-14 (weeks left). A wording that named these kinds of calculation changed none of them (probe, reverted). Plain lookups are not flagged: CUAD 0/60, personal 2/27 (the two the planner already sends to open).
+- **Not calculations:** open-09 needs page counts (file metadata, not text), open-10 two facts from two places, open-01 the syllabus weights the answer model overlooked in a document it read whole (as in step 1's summarize-01).
+
+Option not taken without a decision and a lookup regression run: run the phase on every answer (the model replies "done" when nothing needs computing). It would catch the four missed calculations, at about 0.5-1 s (estimated) on every lookup, which is already 3.5 s p50 against a 2 s target.
+
 ### Still to measure (M2 on)
 
 Measured above: router accuracy, task success per type (1 pass), planner cost on lookups and the regression gate. Still to come (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):
