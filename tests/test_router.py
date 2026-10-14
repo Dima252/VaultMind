@@ -301,11 +301,30 @@ def test_compare_reads_both_documents_whole_without_searching(vault: Vault) -> N
     assert _event(result, "recipe")["documents"] == [vault.ids["syllabus"], vault.ids["worksheet"]]
 
 
-def test_documents_over_the_read_budget_use_the_cards(vault: Vault) -> None:
-    cfg = _cfg(vault.root, read_budget_tokens=20)
+def test_a_document_over_the_read_budget_gets_notes_for_the_request(vault: Vault) -> None:
+    cfg = _cfg(vault.root, read_budget_tokens=150)  # the syllabus needs 171
+    notes = "- The final exam counts for sixty percent (Grading, p. 4)"
+    llm = LLM([_plan("summarize", ["the AI syllabus"]), notes, "Exam: sixty percent [1]."])
+    _, result = _run(vault, llm, "Summarize the syllabus", cfg=cfg)
+    tool = _event(result, "tool")
+    assert tool["name"] == "notes"
+    assert tool["arguments"] == {"doc": vault.ids["syllabus"], "request": "Summarize the syllabus"}
+    assert "this request: Summarize the syllabus" in llm.calls[1][0]["content"]
+    assert notes in llm.calls[2][-1]["content"]
+
+
+def test_documents_over_the_read_budget_with_notes_off_use_the_cards(vault: Vault) -> None:
+    cfg = _cfg(vault.root, read_budget_tokens=20, notes=False)
     llm = LLM([_plan("summarize", ["the AI syllabus"]), "A course [1]."])
     _, result = _run(vault, llm, "Summarize the syllabus", cfg=cfg)
     assert _event(result, "tool")["name"] == "summarize"
+
+
+def test_shares_read_the_smallest_whole_and_leave_the_rest_for_notes() -> None:
+    sizes = {"a": 300, "b": 900, "c": 5000}.__getitem__
+    assert recipes.shares(["c", "a", "b"], sizes, 3000) == ({"a": 300, "b": 900}, 1800)
+    assert recipes.shares(["a", "b"], sizes, 1200) == ({"a": 300, "b": 900}, 0)
+    assert recipes.shares(["a", "c"], sizes, 500) == ({}, 500)  # a > 500 // 2
 
 
 def test_read_budget_leaves_room_for_the_answer_in_the_context() -> None:
@@ -383,7 +402,20 @@ def test_compare_with_reading_off_summarizes_and_searches_for_the_focus(vault: V
     assert files == {"AI in the workplace syllabus.pdf", WORKSHEET}
 
 
-def test_extract_without_named_documents_finds_them_by_search(vault: Vault) -> None:
+def test_extract_finds_documents_by_search_and_reads_them(vault: Vault) -> None:
+    llm = FakeLLM(
+        [_plan("extract", fields=["final exam"], focus="final exam"), "| Document | final exam |"]
+    )
+    _, result = _run(vault, llm, "What does each document say about the final exam?")
+    calls = [(e.data["name"], e.data["arguments"]) for e in result.trace if e.node == "tool"]
+    assert calls[0][0] == "search"
+    assert ("read", {"doc": vault.ids["syllabus"]}) in calls[1:]
+    assert {name for name, _ in calls[1:]} == {"read"}
+    system = llm.calls[-1][0]["content"]
+    assert "markdown table" in system and "a column for each of: final exam" in system
+
+
+def test_extract_with_notes_off_uses_the_extract_tool(vault: Vault) -> None:
     extracted = {"final exam": {"value": "sixty percent", "page": 4}}
     llm = FakeLLM(
         [
@@ -393,7 +425,8 @@ def test_extract_without_named_documents_finds_them_by_search(vault: Vault) -> N
             "| Document | final exam |",
         ]
     )
-    _, result = _run(vault, llm, "What does each document say about the final exam?")
+    cfg = _cfg(vault.root, notes=False)
+    _, result = _run(vault, llm, "What does each document say about the final exam?", cfg=cfg)
     tool_calls = [e.data for e in result.trace if e.node == "tool"]
     assert [c["name"] for c in tool_calls] == ["search", "extract"]
     extract = tool_calls[1]["arguments"]

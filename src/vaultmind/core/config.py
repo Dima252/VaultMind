@@ -69,6 +69,7 @@ class AgentConfig(_Section):
     max_steps: int = Field(default=6, gt=0)  # tool calls per open task
     observation_tokens: int = Field(default=2000, gt=0)  # per tool result shown to the model
     read_budget_tokens: int = Field(default=10000, ge=0)  # recipes read documents whole; 0: cards
+    notes: bool = True  # over the read budget: notes for the request (else cards); extract reads
     think_open: bool = True  # thinking on for open-task tool steps only (M3 loop, unwired)
 
 

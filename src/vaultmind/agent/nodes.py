@@ -252,6 +252,7 @@ def recipe(state: AgentState, deps: Deps) -> Update:
         call=call,
         read_budget=read_budget(deps.cfg),
         doc_tokens=lambda file_id: document_tokens(deps.index, file_id, guard=guard),
+        notes=deps.cfg.agent.notes,
     )
     data = {"name": p.task, "documents": gathered.documents}
     return {"gathered": gathered, "trace": [*events, _event("recipe", start, data)]}

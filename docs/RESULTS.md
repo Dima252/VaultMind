@@ -335,6 +335,29 @@ E1 = `agent.read_budget_tokens: 10000` (the documents named are read whole when 
 
 **Token estimate.** Ollama's `prompt_eval_count` for `qwen3:14b` on the 12 personal documents: chars/4 undercounted mixed Hebrew PDFs by up to 2× (1.6–1.9 characters per token) and one English PDF by 1.3× (3.1), so a "fitting" document could overflow `num_ctx`. Qwen splits every digit into its own token. Fitted per character (never under on all 12, over by 1.01–1.35×): Hebrew letter 0.55, Latin letter 0.2, digit 1, whitespace 1/3, anything else 1 (`agent/text.estimate_tokens`).
 
+### Course correction step 2: notes for documents over the budget, extract by reading (2026-10-14)
+
+`agent.notes: true`: documents are read whole while each fits its share of the read budget (smallest first); the rest get a `notes` call per ~13K-token batch that writes down what the request needs, and extract reads its documents the same way instead of the `extract` tool. Map batching (notes and focused summaries) now counts estimated tokens; it was 3 characters per token, ~1.7× `num_ctx` on mixed Hebrew PDFs. Summarize, compare, extract and open; 3 repeats each. E2 = notes as first written (run 20261014-195117), E2b = the request repeated after the text (run 20261014-202329, adopted).
+
+| mean of 3 | before (cards / extract tool) | E2 | E2b |
+|---|---|---|---|
+| extract success | 2.0/8 (baseline) | **5.0/8** (5, 4, 6) | **5.0/8** (4, 5, 6) |
+| extract key-facts score | 0.312 | 0.604 | 0.667 |
+| compare success | 2.7/8 (E1b) | 3.3/8 | 3.3/8 |
+| compare key-facts score | 0.530 | 0.617 | 0.506 |
+| summarize success | 6.0/10 (E1b) | 6.3/10 | 5.7/10 |
+| summarize key-facts score | 0.702 | 0.699 | 0.673 |
+| open success | 4.0/15 (E1) | 4.3/15 | 5.0/15 |
+| injection items (3) | 1/3 (baseline) | 2.7/3 | 2.0/3 |
+| forbidden rate | 0 | 0 | 0 |
+| p50 summarize / compare / extract | 6.6 / 9.3 / 5.7 s | 6.3 / 10.4 / 7.7 s | 6.2 / 9.8 / 7.1 s |
+
+**Gate (extract ≥ 5/8): met.** Summarize and compare moved within noise (±1 item per repeat); latency is inside the targets. E2 and E2b are equal within noise overall; E2b is kept because of the failure it fixes:
+- **"Nothing relevant" with the answer in context.** A notes call over lesson 19 (11.5K tokens, mostly Hebrew) for "compare Edit Distance with weighted interval scheduling" answered "nothing relevant", though the lecture covers both (Θ(n·m) and Θ(n log n), with pages). With the request repeated after the text and "even if it covers only part of it", the same call wrote the right notes. Split into 4 batches of ~4K tokens, every part still said "nothing relevant", with or without the change; not understood yet. Only the 3 largest documents need more than one batch at `num_ctx` 16K.
+- **Wrong documents from the planner (the main remaining cause):** compare-04 compares two topics of lesson 19 and the planner named lessons 20 and 21; compare-03 compares two algorithms inside lesson 21 and the planner added lesson 22 (a compare "needs two documents"). Notes on the wrong lectures correctly found nothing. Step 3.
+- **open-05** asks for the days between two lectures; the dates are only in the file names. Step 4.
+- **Judge strictness:** compare-03's answer had the right table (Kruskal Θ(m log m) vs Prim Θ(m + n log n)); the gold fact says Θ(m log n), which is the same bound, and the item scored 0.8, 0, 0 over three runs.
+
 ### Still to measure (M2 on)
 
 Measured above: router accuracy, task success per type (1 pass), planner cost on lookups and the regression gate. Still to come (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):

@@ -58,6 +58,10 @@ agent:
   read_budget_tokens: 10000     # summarize / compare / generate read the named documents whole
                                 # while they fit together in this many tokens (capped to leave
                                 # num_ctx room for the answer); 0: they use the document cards
+  notes: true                   # documents that don't fit the read budget get notes taken for
+                                # the request (one call per ~13K tokens of text) instead of their
+                                # card; extract reads its documents the same way instead of
+                                # using the extract tool. Needs read_budget_tokens > 0
   think_open: true              # let the model reason before open-task tool calls (slower).
                                 # For the ReAct loop (Phase 5.5 M3); not wired yet
 

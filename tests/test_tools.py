@@ -239,6 +239,7 @@ def test_default_tools_are_read_only_and_have_no_delete() -> None:
         "read",
         "search",
         "summarize",
+        "notes",
         "extract",
         "calc",
         "date_diff",
@@ -480,7 +481,7 @@ def test_summarize_one_batch_is_one_call_and_cached(vault: Vault) -> None:
 def test_summarize_map_reduce_when_sections_do_not_fit(
     vault: Vault, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(tools, "SUMMARY_MIN_CHARS", 10)
+    monkeypatch.setattr(tools, "MAP_MIN_TOKENS", 40)  # one ~30-token section per map call
     cfg = Config.model_validate({"models": {"num_ctx": 1024}})  # under the reserve
     llm = FakeLLM(["part one", "part two", "part three", "- merged (Overview, p. 1)"])
     out = run(replace(vault.ctx, cfg=cfg, llm=llm), "summarize", doc="checklist")
@@ -489,8 +490,55 @@ def test_summarize_map_reduce_when_sections_do_not_fit(
     out = run(replace(vault.ctx, cfg=cfg, llm=llm2), "summarize", doc="worksheet", focus="x")
     assert len(llm2.calls) == 3  # two maps and a reduce
     assert "part 1 of 2" in llm2.calls[0][0]["content"]
-    assert llm2.calls[2][1]["content"].startswith("Part 1:\na")  # cut to the budget
+    assert llm2.calls[2][1]["content"].startswith("Part 1:\na")
     assert out.text.endswith("c")
+
+
+def test_notes_keep_the_parts_relevant_to_the_request(
+    vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tools, "MAP_MIN_TOKENS", 40)  # one section per map call
+    cfg = Config.model_validate({"models": {"num_ctx": 1024}})
+    llm = FakeLLM(["Nothing relevant.", "- Retry three times (Error handling, p. 2)"])
+    ctx = replace(vault.ctx, cfg=cfg, llm=llm)
+    out = run(ctx, "notes", doc="worksheet", request="  how are errors   handled? ")
+    assert len(llm.calls) == 2
+    system = llm.calls[0][0]["content"]
+    assert 'part 1 of 2 of the document "Workato' in system
+    assert "this request: how are errors handled?" in system
+    assert out.text == (
+        "Notes from Workato recipe design worksheet.docx for the request:\n"
+        "Part 2 of 2:\n- Retry three times (Error handling, p. 2)"
+    )
+    assert [s.section_path for s in out.sources] == [("Error handling",)]
+    again = run(ctx, "notes", doc="worksheet", request="How are errors handled?")
+    assert again == out and len(llm.calls) == 2  # cached per (sha256, request, model)
+
+
+def test_notes_with_nothing_relevant(vault: Vault) -> None:
+    llm = FakeLLM(["nothing relevant"])
+    out = run(replace(vault.ctx, llm=llm), "notes", doc="checklist", request="the budget")
+    assert out.text == "Nothing in Solution design checklist.md is relevant to the request."
+    assert out.sources == ()
+    assert "the whole text" in llm.calls[0][0]["content"]
+
+
+def test_notes_do_not_see_planted_instructions(vault: Vault) -> None:
+    llm = FakeLLM(["- ok"])
+    run(replace(vault.ctx, llm=llm), "notes", doc="vendor memo", request="fees")
+    assert "Ignore all previous instructions" not in llm.calls[0][1]["content"]
+
+
+def test_map_batches_fit_the_context_in_tokens_not_characters(vault: Vault) -> None:
+    hebrew = "שלום " * 4000  # 20,000 characters, ~11,000 estimated tokens: too much at 3 chars
+    fid = vault.ids["notes"]
+    vault.ctx.index.add(
+        [ParentSection(f"{fid}:p{i}", fid, hebrew, ("x",), i, i) for i in range(1, 3)], [], []
+    )
+    llm = FakeLLM(["- a", "- b"])
+    out = run(replace(vault.ctx, llm=llm), "notes", doc="intro-algorithms", request="all")
+    assert len(llm.calls) == 2  # one section per call: two don't fit 16384 - 2048 - 512
+    assert "Part 1 of 2" in out.text
 
 
 def test_summarize_neutralizes_delimiters_in_document_text(vault: Vault) -> None:

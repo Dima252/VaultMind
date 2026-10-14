@@ -1,11 +1,12 @@
 """Recipes: fixed tool sequences for the common document tasks (Phase 5.5).
 
-list -> the catalog; extract -> one extraction table; summarize, compare, generate and open ->
-the documents read whole when they fit the reading budget together (`agent.read_budget_tokens`),
-else each document's summary plus a scoped search when the request has a focus. Every call
-goes through the gateway, so observations are budgeted, guarded and wrapped as data.
-`respond_messages` then builds the one call that writes the answer, citing the sections the
-tools read.
+list -> the catalog. summarize, compare, extract, generate and open -> the documents named
+(extract: found by search when none are), each read whole when it fits its share of the reading
+budget (`agent.read_budget_tokens`), else notes taken for the request (`agent.notes`). With
+reading off: each document's summary plus a scoped search on a focus, and one extraction table
+for extract. Every call goes through the gateway, so observations are budgeted, guarded and
+wrapped as data. `respond_messages` then builds the one call that writes the answer, citing
+the sections the tools read.
 """
 
 from __future__ import annotations
@@ -41,9 +42,10 @@ INSTRUCTIONS: dict[str, str] = {
     "compare": "Compare the documents: say what each one is, where they agree, and where "
     "they differ{focus}. Answer any specific question in the request directly. Use a short "
     "table when it makes the comparison clearer. " + CONCRETE,
-    "extract": "Show the extracted values as a markdown table, keeping the page numbers, and "
-    "then answer the request in one or two sentences. Values marked 'not found' stay that "
-    "way: do not guess them.",
+    "extract": "Show what the request asks for as a markdown table, one row per document"
+    "{fields}, with the page each value is on, then answer the request in one or two "
+    "sentences. Where a document doesn't state a value, write 'not found': do not guess it. "
+    + CONCRETE,
     "generate": "Make what the user asked for (study notes, a quiz, flashcards, a draft...) "
     "from the documents' content{focus}.",
     "list": "Answer which of the user's documents fit the request: name each one exactly as "
@@ -124,10 +126,12 @@ def run(
     call: Call | None = None,
     read_budget: int = 0,
     doc_tokens: Callable[[str], int] | None = None,
+    notes: bool = False,
 ) -> Gathered:
     """Gather what the plan's task needs. `call` runs one tool call (default: `gateway.call`);
     the graph passes one that also records a trace event. With `read_budget` and `doc_tokens`
-    (a file id's size as `read` shows it), documents that fit together are read whole."""
+    (a file id's size as `read` shows it), documents are read whole when they fit together, or
+    with `notes`, each when it fits its share, the others as notes for the request."""
     do = call or gateway.call
     task = plan.task
     out = Gathered()
@@ -151,6 +155,10 @@ def run(
         if not docs:
             found = use("search", query=plan.focus or question)
             docs = _files_of(found, catalog)[:EXTRACT_DOCUMENTS]
+        if docs and doc_tokens is not None and read_budget > 0 and notes:
+            out.documents = docs
+            _read_all(docs, question, use, doc_tokens, read_budget)
+            return out
         if docs:
             fields = list(plan.fields) or [plan.focus or question]
             use("extract", docs=docs, fields=fields)
@@ -159,9 +167,13 @@ def run(
 
     docs = docs[:MAX_DOCUMENTS]
     out.documents = docs
-    if docs and doc_tokens is not None and fits(docs, doc_tokens, read_budget):
-        for doc in docs:
-            use("read", budget=read_budget, doc=doc)
+    if (
+        docs
+        and doc_tokens is not None
+        and read_budget > 0
+        and (notes or fits(docs, doc_tokens, read_budget))
+    ):
+        _read_all(docs, question, use, doc_tokens, read_budget)
         return out
     focus = plan.focus or ""
     for doc in docs:
@@ -172,6 +184,38 @@ def run(
         if task == "open" or (focus and task in ("compare", "generate")):
             use("search", query=focus or question, doc=doc)
     return out
+
+
+def _read_all(
+    docs: Sequence[str],
+    question: str,
+    use: Callable[..., ToolResult],
+    doc_tokens: Callable[[str], int],
+    budget: int,
+) -> None:
+    whole, left = shares(docs, doc_tokens, budget)
+    rest = [d for d in docs if d not in whole]
+    for doc in docs:
+        if doc in whole:
+            use("read", budget=whole[doc], doc=doc)
+        else:
+            use("notes", budget=max(left // len(rest), 1), doc=doc, request=question)
+
+
+def shares(
+    docs: Sequence[str], doc_tokens: Callable[[str], int], budget: int
+) -> tuple[dict[str, int], int]:
+    """The documents read whole (with their sizes) and the budget left for the others. The
+    smallest go first, each while it fits an equal share of what is left."""
+    sizes = {d: doc_tokens(d) for d in docs}
+    whole: dict[str, int] = {}
+    left = budget
+    for i, doc in enumerate(sorted(docs, key=sizes.__getitem__)):
+        if sizes[doc] > left // (len(docs) - i):
+            break
+        whole[doc] = sizes[doc]
+        left -= sizes[doc]
+    return whole, left
 
 
 def fits(docs: Sequence[str], doc_tokens: Callable[[str], int], budget: int) -> bool:
@@ -207,6 +251,7 @@ def respond_messages(
         s="s" if plural else "",
         it_is="each one is" if plural else "it is",
         focus=f", focusing on {plan.focus}" if plan.focus else "",
+        fields=f" and a column for each of: {', '.join(plan.fields)}" if plan.fields else "",
     )
     system = RESPOND_SYSTEM.format(
         instruction=instruction, language=LANGUAGES.get(plan.language, plan.language)
