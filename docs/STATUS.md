@@ -1,6 +1,6 @@
 # VaultMind: Status and Handoff
 
-_Last updated: 2026-10-14, late (Phase 5.5 course correction steps 0-4 done and committed: task success 0.450 → 0.598, lookups hold, lookup latency misses its target; three decisions are pending for the user. Start at "Where we stopped")._
+_Last updated: 2026-10-17 (Phase 5.5 closed for the showcase: the pending decisions are made, no new runs, docs and README updated; task success 0.598, lookups hold, lookup latency misses its target. Start at "Where we stopped")._
 
 This is the starting point for anyone (human or agent) continuing the work. Read it after `CLAUDE.md`. The roadmap with checkboxes is in [EXECUTION_PLAN.md](EXECUTION_PLAN.md), every measured number is in [RESULTS.md](RESULTS.md), and the day-by-day detail is in the git log.
 
@@ -14,10 +14,29 @@ This is the starting point for anyone (human or agent) continuing the work. Read
 | 3. Retrieval quality | ✅ Done. Hybrid + rerank + child chunks are the default |
 | 4. Agent loop + safety | ✅ Done. LangGraph loop, injection guard, contradiction and groundedness checks, traces. Only the parts that earned their keep are on by default |
 | 5. Desktop app | ✅ Built (NiceGUI, `vaultmind ui`), runs on the real vault. Opens as a browser tab by default. Hand walkthrough partly done (chat page only) |
-| 5.5 Document agent | 🟡 **In progress.** M0 (contracts) and M1 (document cards, tools + gateway, task eval) done. **M2 + course correction steps 0-4 (read whole documents, notes, planner picks documents by the user's words, calc phase) committed 2026-10-14: task success 0.450 → 0.598, lookup gate passes. Next: decisions on the calc phase, the open loop and planner latency, then step 5 (clarify interrupt)** |
-| 6–7 | ⬜ Not started |
+| 5.5 Document agent | ✅ **Closed 2026-10-17 with a smaller scope.** M0–M2 done, M3 as the calc phase. Read whole documents, notes, the planner picks documents by the user's words: task success 0.450 → 0.598, lookup gate passes. The open loop isn't built; the clarify interrupt, M4 and M5 moved to "Later" |
+| 6. Hardening | ⬜ Not started |
+| 7. Packaging + showcase | 🟡 Results summary, README and CV bullets done (2026-10-17). Demo GIF and one-command launch left |
 
-## Where we stopped (2026-10-14, late)
+## Where we stopped (2026-10-17): Phase 5.5 closed for the showcase
+
+The user asked to wrap the phase up without new model runs, so there is something to show. Nothing in the answer path changed after the recorded step 3 and step 4b runs (3 repeats each), so those are the final numbers.
+
+**Decided (user, 2026-10-17):**
+- **(a) The calc phase stays behind the planner flag**, not on every answer: lookups already miss their latency target.
+- **(b) No open ReAct loop.** Only open-09 and open-10 needed one. It's under "Later" in EXECUTION_PLAN.md.
+- **(c) Planner latency is a known limitation**, first in line under "Later", with the options in order: `qwen3:4b` as the planner, retrieval while the planner runs, a rule that skips the planner for clear lookups.
+- **Step 5 (the clarify interrupt) moved to "Later".** Clarify already works as a chat turn (4/6), and there's no write tool or long job that needs approval yet.
+
+**Docs updated:** the README (status, the agent diagram as built, things to try, known limitations), a "Summary" at the top of RESULTS.md (what helped, what didn't), EXECUTION_PLAN.md (steps 4–7 and milestones M2/M3 ticked, a "Deferred from Phase 5.5" list, CV bullets filled in) and `CLAUDE.md` (fast paths: no tool loop).
+
+**Left for the showcase (the user):**
+1. **Record the demo** (30–60 s, `vaultmind ui`, warm models, nothing else on the GPU). A script that shows each path: "What documents do I have?" → "Summarize the AI in the workplace syllabus" → "make it shorter" → "Compare the Solution Design Checklist with the Recipe Design Worksheet" → a Hebrew request → an out-of-corpus question ("What is the capital of Peru?") → open a citation and the trace. This is also the hand check of the four requests that started Phase 5.5. Save it as `docs/demo.gif` and replace the `TODO(Phase 7)` comment at the top of the README.
+2. Optional: the one-command launch (Phase 7).
+
+**If work continues after the showcase:** planner latency first (EXECUTION_PLAN.md, "Later"), then Phase 6 (the network-blocked test is the strongest privacy claim to back up).
+
+## Course correction results (2026-10-14)
 
 **Phase 5.5's course correction ("read, don't route", EXECUTION_PLAN.md) is done through step 4 and committed** (30a6f02, 4880493, 6e616dc, e58e6e0, 7c3b304). Every number below is from 3 repeats; details and per-item analysis in RESULTS.md ("Course correction" sections).
 
@@ -53,18 +72,9 @@ Lookups hold (router on vs off): CUAD correctness 0.806 vs 0.792, personal 0.884
 | extract | – | ~6.8 s |
 | open | < 30 s | ~4.5 s |
 
-**Decisions for the user (pending):**
-- **(a) Calc phase on every answer?** It would catch four calculations the planner routes as plain lookups (open-08/11/12/14), at an estimated 0.5-1 s on every lookup. Recommendation: keep the planner flag for now.
-- **(b) Build the open ReAct loop (step 6)?** Only open-09 (page counts, which are file metadata) and open-10 (two facts from two places) are left for it. Recommendation: skip it; move it to "Later" with that reason.
-- **(c) Planner latency.** The planner adds ~1.8-2 s to every message, so lookups miss the 2 s target. Options: measure `qwen3:4b` as the planner (the plan already lists it; VRAM is tight), or skip the planner for messages that are clearly lookups. This is now the biggest product gap, more than accuracy.
+The three decisions this run left open (calc phase on every answer, the open loop, planner latency) were made on 2026-10-17; see above.
 
-**Next session, start here:**
-1. The user's decisions above.
-2. **You:** a hand check in `vaultmind ui` of the four requests that started Phase 5.5 (summarize the Workato worksheet, summarize the AI syllabus, "what documents do I have?", compare the checklist with the worksheet), their Hebrew versions, and a "make it shorter" follow-up. The eval covers these kinds of requests, but nobody has tried them by hand since the changes.
-3. Step 5: clarify as a LangGraph `interrupt()` with the SQLite checkpointer, `Engine.resume(chat_id, decision)`.
-4. Step 7: a final recorded `eval tasks --repeat 3` and lookup regression, update `CLAUDE.md` ("Fast paths before the tool loop": recipes now read documents; the open loop's fate), tick M2 (and M3 as far as it goes) in EXECUTION_PLAN.md.
-
-**Known misses and open items:**
+**Known misses and open items** (also under "Later" in EXECUTION_PLAN.md):
 - list-05: a Hebrew "documents about renting a warehouse" lists the Wrenfield lease but not its English abstract (planner matching).
 - open-01: the answer model overlooks the syllabus' 80%/20% grading in a document it read whole.
 - Notes split into ~4K-token batches answered "nothing relevant" for every part of a lecture that one batch handled correctly (RESULTS.md, step 2). Only the 3 largest documents need several batches at `num_ctx` 16K.
@@ -195,7 +205,8 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
   2. **General knowledge:** strict "only my documents" by default; `agent.world_knowledge` (off) allows clearly labeled answers from the local model.
   3. **Document cards at ingest:** on (`ingest.enrich: true`), in the background, once per file content.
 - **Document agent shape (2026-10-12):** a ReAct loop with human-in-the-loop behind fast paths: lookups keep the corrective graph, common tasks run as fixed recipes, only open multi-step tasks enter the tool loop. Still LangGraph: the graph grows a planner and a tool loop, and the lookup graph is reused as one path. Plan and rationale in EXECUTION_PLAN.md, Phase 5.5.
-- **Course correction, "read, don't route" (2026-10-14, measured):** the whole-document tasks read the documents named (whole while they fit `agent.read_budget_tokens`, else `notes` for the request) instead of document cards; cards serve the catalog and document resolution. The planner names documents in the user's words and code resolves them. Calculations run through calc / date_diff before the streamed answer. Task success 0.450 → 0.598 with lookups held. The open ReAct loop is not built; whether it is needed is a pending decision ("Where we stopped").
+- **Course correction, "read, don't route" (2026-10-14, measured):** the whole-document tasks read the documents named (whole while they fit `agent.read_budget_tokens`, else `notes` for the request) instead of document cards; cards serve the catalog and document resolution. The planner names documents in the user's words and code resolves them. Calculations run through calc / date_diff before the streamed answer. Task success 0.450 → 0.598 with lookups held.
+- **Closing Phase 5.5 (user, 2026-10-17):** the calc phase runs only when the planner flags it; no open ReAct loop (2 of 63 items needed one); the clarify interrupt, M4 and M5 moved to "Later"; planner latency is the first item there. This replaces the 2026-10-12 "ReAct loop with human-in-the-loop" shape above.
 - **Reranker deps are an optional extra** (`rerank`), so CI doesn't download torch.
 - **No `tiktoken`**: it downloads its tokenizer at runtime, which breaks the offline rule.
 - **`think: false` by default.** Qwen3 thinking adds latency. It's a config switch, so the eval can measure its effect.
@@ -206,10 +217,10 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
 
 ## What's left, in order
 
-1. **Phase 5.5: document agent** (milestones in EXECUTION_PLAN.md): ~~decisions~~, ~~M0~~, ~~M1~~ → M2 + course correction steps 0-4 done (**decisions pending, then step 5 clarify interrupt and step 7 recorded runs**, see "Where we stopped") → M4 retrieval upgrades → M5 UI. Planner latency (lookups ~3.5 s vs a 2 s target) needs its own fix.
-2. **Finish the hand walkthrough** of the app: drop a PDF in, ask, open a citation, open the trace, export, change a setting. Only the chat page has been tried by hand so far.
+1. **The demo for the showcase** (Phase 7; script in "Where we stopped"). It doubles as the hand walkthrough of the app: drop a PDF in, ask, open a citation, open the trace, export, change a setting. Only the chat page has been tried by hand so far.
+2. **Planner latency** (lookups ~3.5 s vs a 2 s target), then the rest of "Deferred from Phase 5.5" in EXECUTION_PLAN.md ("Later"): calc on every answer, the clarify interrupt, M4 retrieval upgrades, M5 UI.
 3. **Phase 6: hardening** (tasks in EXECUTION_PLAN.md): network-blocked test, telemetry audit, launch token (other local programs can use the app today), atomic re-index, Ollama-down recovery, resumable ingestion, edge-case files, the secret/PII scanner. OCR needs a decision (new dependency + model download; offline Hebrew handwriting OCR is weak).
-4. **Phase 7: packaging and showcase.** One-command install, an optional Windows build, a demo GIF, the results write-up in the README, CV bullets from RESULTS.md.
+4. **Rest of Phase 7:** one-command install and an optional Windows build. (The results write-up, README and CV bullets are done.)
 5. **Eval quality items, any time:**
    - Harder follow-up (pronoun-only) and multi-hop questions. Today's 4 follow-ups are answered correctly even without history.
    - A stronger injection set, with payloads in the same chunk as the clause asked about. The current set is at 8/8 even without the guard.
@@ -219,17 +230,17 @@ Storage lives in `paths.data_dir` (default `./data`): `index/` (LanceDB) and `va
 
 ## Known limitations
 
-- **Document agent (M2, measured 2026-10-14):**
+- **Document agent (measured 2026-10-14):**
   - The planner adds one LLM call to every message, lookups included: +1.7–2.0 s p50 on lookups. `qwen3:4b` for the planner is an option to measure.
-  - Card-based summaries and compares are too general for specific facts (numbers, percentages, complexities): the main M2 quality gap.
+  - The planner misses calculations it routes as plain lookups (4 of 15 open items), so the calc phase doesn't run for them.
   - qwen3:14b's Hebrew is weak when it writes from English sources: besides the foreign-script words (now blocked by `models.script_guard`) it coins wrong Hebrew words and drops Latin fragments. A model with stronger Hebrew is worth measuring.
   - Ollama 0.40.3's model runner crashes about once an hour under eval load (connection reset mid-answer); it restarts by itself.
   - Lookups ignore the documents the planner resolved: no search scoped to a named file yet (a candidate for M4).
-  - Nothing reads `agent.world_knowledge` or `agent.think_open` yet (M3).
-  - A clarifying question is just the answer. The user's reply is a new message the planner reads with the history; the `interrupt()` flow is M3.
-  - `open` with documents is a fixed recipe, not a reasoning loop (M3). A recipe reads at most 4 documents.
+  - Nothing reads `agent.world_knowledge` or `agent.think_open` yet (the second belongs to the open loop, which isn't built).
+  - A clarifying question is just the answer. The user's reply is a new message the planner reads with the history; the `interrupt()` flow is under "Later".
+  - `open` with documents is a fixed recipe, not a reasoning loop (decided 2026-10-17). A recipe reads at most 4 documents.
   - The planner sees only the first `agent.catalog_files` (60) catalog lines; the rest are only counted (a named document is still matched against every file), and nothing searches the cards above that yet.
-  - The respond call doesn't run the groundedness check (M3 "verify").
+  - The respond call doesn't run the groundedness check (it earned little on lookups; not measured on documents).
   - The list answer (no filter) shows each card's first summary line in the document's own language.
 - **Document agent (M1 parts):**
   - Scoped search over-fetches (10× candidates, max 200) and filters by file; a `file_id` prefilter in `ChunkIndex.vector_search` / `fts_search` would be exact (open contract change request).

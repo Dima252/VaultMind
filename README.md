@@ -3,7 +3,7 @@
 **A fully local, privacy-first AI assistant for your own documents.**
 Drop in PDFs, Markdown or text files and ask questions about them. VaultMind finds the relevant passages, checks that they actually answer the question, and answers with citations, or says the answer isn't in your documents. All of it runs on your own machine; nothing is sent to a cloud API.
 
-> 🚧 **Status: in development.** Working and measured: ingestion (including Hebrew PDFs), hybrid retrieval with reranking, the corrective loop with an injection guard and a contradiction check, traces, the evaluation harness, and the app (`vaultmind ui`). Lookup questions are answered well ([results](docs/RESULTS.md)). Turning it into a full document agent is in progress ([roadmap](#roadmap-from-search-to-document-agent)): document cards, local tools, and a planner that routes summarize, list, compare and extract requests to fixed tool recipes are built and unit-tested, but **not yet checked against the real models**, so treat those tasks as experimental. Multi-step tasks come next. See [status](docs/STATUS.md) and the [execution plan](docs/EXECUTION_PLAN.md).
+> **Status: working prototype, measured end to end.** Ingestion (including Hebrew PDFs), hybrid retrieval with reranking, the corrective loop with an injection guard and a contradiction check, a document agent (list, summarize, compare, extract, calculate), traces, the evaluation harness, and the app (`vaultmind ui`) all run against real local models. Every number is in [RESULTS.md](docs/RESULTS.md), with a summary of what helped and what didn't. The main known gap: the planner adds ~2 s to every message ([known limitations](#known-limitations)). See [status](docs/STATUS.md) and the [execution plan](docs/EXECUTION_PLAN.md).
 
 <!-- TODO(Phase 7): demo GIF here, showing the agent planning a task, reading documents step by step, and answering with citations -->
 
@@ -22,7 +22,7 @@ Most "chat with your documents" tools upload your files to someone else's server
 - **Corrective RAG loop.** A cross-encoder reranker grades the retrieved passages. If none are good enough, the agent reports that the answer isn't in your documents and shows the closest matches, instead of guessing. Chat follow-ups are resolved into standalone questions. Query rewriting and query variants are available as switches; they are off by default because they didn't improve answers in our measurements ([results](docs/RESULTS.md)).
 - **Prompt-injection guard.** Retrieved text goes to the model as quoted data, and passages containing instructions aimed at AI tools are flagged. When documents disagree, the answer states both claims with their sources.
 - **Citations.** Each answer links to the file and page it came from.
-- **Document tasks (experimental, not yet verified on the real models).** A document card is written for each file at ingest (type, summary, outline, key dates and entities). A planner call decides what each message asks for: lookups take the corrective loop, while "what documents do I have?", "summarize X", "compare X and Y" and "extract ... as a table" run fixed sequences of local, read-only tools and cite the sections they read. Ambiguous requests ("which syllabus?") get a clarifying question.
+- **Document tasks.** A planner call decides what each message asks for. Lookups take the corrective loop. "What documents do I have?" answers from your catalog. "Summarize X", "compare X and Y" and "extract ... as a table" read the documents named, whole when they fit the context window, otherwise as notes taken for the request, and cite the sections they read. Questions that need arithmetic or date counting get an exact calculator step first. Ambiguous requests ("summarize the lecture" with five lectures) get a clarifying question, and a document that doesn't exist gets "not found". Works in Hebrew and English.
 - **Agent trace.** For every answer, see the queries that were tried, how each passage scored, and where the time went.
 - **Built-in evaluation.** Every pipeline component can be toggled in config, and `vaultmind eval` measures what each one contributes.
 
@@ -45,7 +45,7 @@ flowchart LR
 
 ### Answering a question
 
-A planner call first decides what kind of request a message is (see the [roadmap](#roadmap-from-search-to-document-agent)). Lookups, the most common kind, go through the corrective loop:
+A planner call first decides what kind of request a message is (see [from search to document agent](#from-search-to-document-agent)). Lookups, the most common kind, go through the corrective loop:
 
 ```mermaid
 flowchart TD
@@ -61,39 +61,28 @@ flowchart TD
 
 The loop is a [LangGraph](https://github.com/langchain-ai/langgraph) state machine. Grading uses reranker scores rather than one LLM call per passage, which makes it faster and more reliable on local hardware. LLM calls are reserved for planning, query analysis, rewriting, document cards at ingest, the optional checks, and the answer. By default the analyze step runs only when there is chat history to resolve, and rewriting is off (it didn't help in the measurements).
 
-### Roadmap: from search to document agent
+### From search to document agent
 
-Until Phase 5.5 every message was a lookup: search, keep the best passages, answer. That's why "summarize this document", "what documents do I have?" and "compare X with Y" failed. Phase 5.5 turns VaultMind into a local document agent. A planner decides what a message needs, and lookups keep the measured corrective loop. Document tasks read the documents you name: whole when they fit the local context window, otherwise as notes taken for your request.
+At first every message was a lookup: search, keep the best passages, answer. That's why "summarize this document", "what documents do I have?" and "compare X with Y" failed in the first hand test. Phase 5.5 turned VaultMind into a local document agent. A planner decides what a message needs, and lookups keep the measured corrective loop. Document tasks read the documents you name.
 
 ```mermaid
 flowchart TD
-    Q[Message + chat memory<br/>focus documents, earlier results] --> P[Plan and route<br/>task, documents, short plan]
-    P -- chat / rework last answer --> R
-    P -- lookup --> L[Corrective RAG<br/>today's loop, unchanged] --> R
+    Q[Message + recent chat] --> P[Plan<br/>what is asked, which documents<br/>in your own words]
+    P -- ambiguous or missing document --> A[Ask which one /<br/>not found]
+    P -- chat / rework the last answer --> R
+    P -- lookup --> L[Corrective RAG loop] --> R
     P -- list --> K[Your document catalog] --> R
-    P -- summarize / compare / extract / generate --> C[Read the documents named<br/>whole, or notes for the request] --> R
-    P -- needs a calculation --> N[Calculator<br/>calc, date_diff] --> R
-    P -. open, multi-step: planned .-> T[Reason<br/>local tool calls]
-    T --> G[Tool gateway<br/>validate, resolve documents, budget, guard]
-    G -- read-only --> X[Run tool]
-    G -- write or expensive --> H[Ask you<br/>approve / edit / reject]
-    H -- approved --> X
-    H -- rejected: feedback --> T
-    X -- observation --> T
-    T -- done --> R[Respond<br/>verify citations, stream]
+    P -- summarize / compare / extract / generate --> C[Read the documents named<br/>whole, or notes for the request]
+    C --> R
+    C -. needs arithmetic .-> N[Calculator<br/>calc, date_diff]
+    N --> R[Respond<br/>streamed, cites what was read]
+    C <--> G[Tool gateway<br/>validate, resolve documents,<br/>token budget, injection guard]
 ```
 
-Where it stands:
-
-- **Built and measured:**
-  - **What it knows about your files:** a card for each document, built at ingest (47 files in the real vault), which gives the agent your catalog.
-  - **Tools:** local read-only tools behind a validating gateway: list, outline, read, search one file, notes for a request, extract, calculate.
-  - **The agent:** the planner, the document tasks (list, summarize, compare, extract, generate), and a calculator phase for answers that need arithmetic or date counting.
-  - **Results:** on a 63-item task set (half Hebrew), task success went from 0.45 to 0.60 while lookup quality held.
-- **Next:** making the planner faster (it adds ~2 s to every message); clarifying questions you can answer mid-run; deciding whether an open multi-step loop is still needed.
-- **Then:** asking before long jobs and before any write (writes need your approval, and the agent has no delete tool); retrieval upgrades for cross-lingual and two-part questions; a live step list in the app.
-
-Details and milestones: [execution plan, Phase 5.5](docs/EXECUTION_PLAN.md).
+- **What it knows about your files:** a card for each document, built at ingest (type, summary, outline, key dates), which gives the agent your catalog and lets "the Workato worksheet" resolve to a file. Cards aren't answer material: summaries built on them were too general, so the agent reads the documents themselves.
+- **Tools:** plain local Python functions behind a validating gateway: list, outline, read, search one file, notes for a request, calculate, date difference. All read-only, and the agent has no delete tool.
+- **What it measured:** on a 63-item task set (half Hebrew), task success went from 0.45 to 0.60, summaries from 3.3 to 7.0 of 10, while lookup quality held.
+- **Decided against:** an open multi-step tool loop. After reading whole documents and adding the calculator, only 2 of 63 task items needed one ([plan](docs/EXECUTION_PLAN.md), Phase 5.5).
 
 ## Tech stack
 
@@ -134,8 +123,17 @@ Put your documents in `vault/` (PDF, Markdown, or text), then:
 ```bash
 uv run vaultmind ingest                      # index new/changed files, forget deleted ones
 uv run vaultmind ask "What does the contract say about termination?"
-uv run vaultmind ask "What documents do I have?" --trace   # a document task (experimental); --trace shows the route and each step
+uv run vaultmind ask "What documents do I have?" --trace   # a document task; --trace shows the route and each step
 ```
+
+Things to try, in English or Hebrew:
+
+- "What documents do I have?" and "Which of my documents are about leases?"
+- "Summarize the syllabus", then "make it shorter" or "translate it to English"
+- "Compare the checklist with the worksheet"
+- "Extract the parties, dates and governing law from the lease as a table"
+- A question that needs arithmetic, such as the days between two dates in a document (uses the calculator)
+- "What is the capital of Peru?" (not in your documents, so it says so)
 
 Or use the app, which watches `vault/`, indexes changes as they happen and writes a document card for each file in the background:
 
@@ -185,6 +183,14 @@ The pipeline is measured against a test set of questions with known source passa
 | Latency (p50 / p95) | What each component costs in time |
 
 Each component (hybrid search, reranking, small-to-big retrieval, the rewrite loop) is measured with an ablation run so that its contribution is shown in numbers.
+
+## Known limitations
+
+- **The planner costs ~2 s per message.** Lookups take ~3.5 s at the median instead of 1.6 s without it (target: 2 s). A smaller planner model, or running retrieval while the planner decides, is the next thing to try.
+- **Some calculations go unnoticed.** When the planner routes a question that needs arithmetic as a plain lookup, the calculator doesn't run (4 of 15 multi-step items).
+- **Clarifying questions are a chat turn.** The agent asks and you answer in your next message. It doesn't pause a running task.
+- **No scanned PDFs.** Files without a text layer aren't read (OCR is a later decision), and the PDF parser drops superscripts such as 2ⁿ.
+- **One model, one GPU.** Developed and measured on a 16 GB NVIDIA card with `qwen3:14b`; with less VRAM, answers get slower.
 
 ## Development
 

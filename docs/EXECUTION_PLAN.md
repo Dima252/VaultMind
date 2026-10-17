@@ -12,7 +12,7 @@ The order matters. A plain baseline and the eval harness come **before** any of 
 | 3 | Retrieval quality: hybrid, rerank, small-to-big | M |
 | 4 | Agentic corrective loop + traces | M |
 | 5 | Desktop UI + live folder watching | L |
-| 5.5 | Document agent: planner, tools, ReAct loop, human-in-the-loop | L |
+| 5.5 | Document agent: planner, tools, reading whole documents, calculator | L |
 | 6 | Hardening + privacy guarantees | M |
 | 7 | Packaging + showcase | S |
 
@@ -301,21 +301,21 @@ Cards stay, but only for the catalog, resolving documents and "which document co
    - Carry over the open problems: Hebrew clarify misses ("סכם את המטלה" should ask which assignment). Check with `scripts/dev/plan_probe.py`.
    - **Gate:** routing ≥ 0.90 on the mapped labels, clarify ≥ 4/6, lookups stay lookups (CUAD 60/60, personal ≥ 25/27 in `plan_probe`), and task success no worse than after steps 1–2.
 
-4. 🟡 **Calculation in the answer call** (replaces most of M3's ReAct loop). *Built 2026-10-14 as a calc phase before the streamed answer (`agent/calculate.py`, `agent.calculate`, planner flag `calculate`): open 4.3 → 6.3/15, every call valid, gate (≥ 9/15) not met. The planner doesn't flag four calculations it routes as lookups; running the phase on every answer would catch them at ~0.5-1 s per lookup (decision pending, RESULTS.md).*
+4. ✅ **Calculation in the answer call** (replaces most of M3's ReAct loop). *Built 2026-10-14 as a calc phase before the streamed answer (`agent/calculate.py`, `agent.calculate`, planner flag `calculate`): open 4.3 → 6.3/15, every call valid, gate (≥ 9/15) not met. The planner doesn't flag four calculations it routes as lookups; running the phase on every answer would catch them at ~0.5-1 s per lookup (RESULTS.md). **Decided 2026-10-17: adopted as it is, with the planner flag; not on every answer**, because lookups already miss their latency target.*
    - When the plan says `calculate`, the answer call (the `documents` respond call, or `generate` on the lookup path) gets `calc` and `date_diff` as native tools through the gateway. It runs non-streamed tool turns, bounded by `agent.max_steps` (lower it to 3), then streams the final answer.
    - Without `calculate`, both paths are exactly as before, so the measured lookup path doesn't change.
    - Measure: `--task open --repeat 3`, plus the valid tool-call rate and steps per task.
    - **Gate:** open ≥ 9/15, valid tool calls ≥ 90%, open tasks < 30 s.
 
-5. **Human-in-the-loop** (from M3, unchanged in scope): clarify as a LangGraph `interrupt()` with the SQLite checkpointer; `Engine.ask` yields a clarify/confirm event and `Engine.resume(chat_id, decision)` continues. Confirm expensive jobs (map-reduce over many documents). Approval for writes is built when the first write tool (`save_note`) is.
+5. ⏭ **Human-in-the-loop** (from M3). *Moved to "Later" 2026-10-17: clarify already works as a chat turn (the `human` node asks, the next message answers through the chat history, clarify 4/6), and there is no write tool and no long job that needs approval yet.* Scope as planned: clarify as a LangGraph `interrupt()` with the SQLite checkpointer; `Engine.ask` yields a clarify/confirm event and `Engine.resume(chat_id, decision)` continues. Confirm expensive jobs (map-reduce over many documents). Approval for writes is built when the first write tool (`save_note`) is.
 
-6. **Decide on the open ReAct loop.** *Read 2026-10-14: of the open items still failing, only open-09 (page counts: file metadata) and open-10 (two facts from two places) are loop-shaped; the rest are calculations the planner doesn't flag (step 4) or a fact the answer overlooked. Recommendation: move the loop to "Later"; the user decides.* Read the multi-step items that still fail after step 4. Build the bounded loop (`agent.think_open`, repair retry, fall back to the documents path) only if they fail because the model had to find something first and then read it. Otherwise it moves to "Later" with that reason.
+6. ✅ **Decide on the open ReAct loop.** *Read 2026-10-14: of the open items still failing, only open-09 (page counts: file metadata) and open-10 (two facts from two places) are loop-shaped; the rest are calculations the planner doesn't flag (step 4) or a fact the answer overlooked. **Decided 2026-10-17: not built; moved to "Later" with that reason.*** Read the multi-step items that still fail after step 4. Build the bounded loop (`agent.think_open`, repair retry, fall back to the documents path) only if they fail because the model had to find something first and then read it. Otherwise it moves to "Later" with that reason.
 
-7. **Recorded runs and docs.** Run `eval tasks --repeat 3` and the lookup regression (`eval run -d cuad -d personal -c config/default.yaml -c eval/configs/router_off.yaml --repeat 3`), and record both in RESULTS.md. Update `CLAUDE.md` ("Fast paths before the tool loop": recipes become context paths), the decisions in STATUS.md, and this section (mark what was adopted). Then tick M2 and M3.
+7. ✅ **Recorded runs and docs.** *Done 2026-10-17 without new runs: nothing in the answer path changed after the recorded step 3 and step 4b runs (task set and lookup regression, 3 repeats each, RESULTS.md), so those are the final numbers. `CLAUDE.md`, STATUS.md and the README are updated.* As planned: run `eval tasks --repeat 3` and the lookup regression (`eval run -d cuad -d personal -c config/default.yaml -c eval/configs/router_off.yaml --repeat 3`), and record both in RESULTS.md. Update `CLAUDE.md` ("Fast paths before the tool loop": recipes become context paths), the decisions in STATUS.md, and this section (mark what was adopted). Then tick M2 and M3.
 
 **Not changing:** the lookup graph and its numbers, LangGraph, cards at ingest, the gateway (validation, guard, repeat cache), citations to sections and pages actually read, "not found" for documents that don't exist, and the latency targets below.
 
-**Status (2026-10-14, late):** steps 0-4 done and committed, task success 0.450 → 0.598, lookup regression passes. Pending decisions for the user: the calc phase on every answer (step 4), the open loop (step 6), and planner latency (lookups ~3.5 s against the 2 s target below; the planner is ~1.8 s of it). Then steps 5 and 7. Numbers in RESULTS.md, handoff in STATUS.md.
+**Status (2026-10-17): closed.** Steps 0-4, 6 and 7 are done, and step 5 moved to "Later". Task success 0.450 → 0.598, and the lookup regression passes. The known gap is planner latency (lookups ~3.5 s against the 2 s target below; the planner is ~1.8 s of it); it is first in line under "Later". Numbers in RESULTS.md, handoff in STATUS.md.
 
 **Not split across agents:** each step depends on the previous step's measurement, and steps 1–4 all touch `recipes.py`, `nodes.py` and the planner. Run it as one sequence on `main`, committing after each gate.
 
@@ -324,11 +324,11 @@ Cards stay, but only for the catalog, resolving documents and "which document co
 - [x] **Decisions (user, 2026-10-12):** (1) summaries, comparisons, extractions and generated material cite the sections and pages they read; lookups keep the graded-passage rule and "not found" (in `CLAUDE.md`). (2) General knowledge: a clearly labeled local world-knowledge mode as a switch, off by default (`agent.world_knowledge`). (3) Document cards at ingest: on, as a switch (`ingest.enrich`).
 - [x] **M0: contracts on `main`.** Provider tool-call protocol + fake, types, config switches, trace keys, checkpointer, `tasks.jsonl` format, stub signatures, agent prompts in `scripts/agents/prompts/` (and the new shared files and dependency in `_rules.md`). Done 2026-10-12: `LLM.chat` checked live with `qwen3:14b` (a correct native tool call in 0.3 s with thinking off, 2.1 s on); `CardStore` (migration 4) and `ChunkIndex.parents_for_file` implemented; stubs `ingest/enrich.py`, `agent/catalog.py`, `agent/tools.py`, `agent/gateway.py`; prompts `cards.md`, `tools.md`, `taskeval.md`.
 - [x] **M1: foundations, three agents in parallel.** (a) Document cards at ingest + card store; (b) tools + gateway; (c) `tasks.jsonl` + key-facts judge + `eval run --repeat N` + router labels. Merged 2026-10-13; numbers in RESULTS.md, cards built for the real vault (47).
-- [ ] **M2: planner, recipes, transform.** Wired into the graph with the lookup path untouched. *Code and unit tests done 2026-10-13 (`agent/planner.py`, `agent/recipes.py`, `eval/task_runner.py`, `vaultmind eval tasks`). Tick it once the "done when" check below passes on the real models (steps in STATUS.md). 2026-10-14: runs live; lookup gate passes, router 0.84, task success 0.38 (whole-document answers too general); fixes and recorded runs pending (STATUS.md, "Next session"). Now done through the course correction above: steps 0–3.*
-- [ ] **M3: ReAct loop, human-in-the-loop, verify.** *Course correction steps 4–6: calculation in the answer call, human-in-the-loop, then a measured decision on whether the open loop is needed.*
-- [ ] **M4: retrieval upgrades** (component 10), each measured on CUAD and personal.
-- [ ] **M5: UI.** A live step list ("Reading Syllabus, pp. 1–12…"), approval and clarify cards, Summarize / Quiz me per file in the Library, the route and tool calls in the trace panel, section chips on summary answers, memory in Settings.
-- [ ] **Eval:** ~60 task items, half in Hebrew: list 5, summarize 10, compare 8, extract 8, transform 8, multi-step 15, ambiguous (should clarify) 6. Metrics: router accuracy, task success (key-facts judge, 3 repeats), citation precision, valid tool-call rate, steps per task, latency per task type, injection items where a document tries to trigger a tool call. CUAD and personal lookup numbers must hold within noise. *The set exists (63 items, 31 in Hebrew, gitignored; reviewed 2026-10-14, 208 key facts). `eval tasks` (M2) reports router accuracy, task success, clarify accuracy, forbidden rate and latency per task; citation precision, valid tool-call rate and steps come with M3.*
+- [x] **M2: planner, recipes, transform.** Wired into the graph with the lookup path untouched. *Code and unit tests done 2026-10-13 (`agent/planner.py`, `agent/recipes.py`, `eval/task_runner.py`, `vaultmind eval tasks`). 2026-10-14: runs live; lookup gate passes, router 0.84, task success 0.38 (whole-document answers too general). Done 2026-10-17 through the course correction (steps 0–3): task success 0.598, summarize 7.0/10, compare 4.3/8, lookups within noise. The four failing requests are covered by the task set; a hand check in the app is part of recording the demo (STATUS.md).*
+- [x] **M3, reduced scope: calculation.** *Done 2026-10-17 as course correction step 4 (the calc phase, open 6.3/15, every tool call valid). The open ReAct loop (step 6) isn't needed, and the human-in-the-loop interrupt (step 5) moved to "Later".*
+- [ ] **M4: retrieval upgrades** (component 10), each measured on CUAD and personal. *Moved to "Later" 2026-10-17.*
+- [ ] **M5: UI.** A live step list ("Reading Syllabus, pp. 1–12…"), approval and clarify cards, Summarize / Quiz me per file in the Library, the route and tool calls in the trace panel, section chips on summary answers, memory in Settings. *Moved to "Later" 2026-10-17; the chat page already shows the answer, its citations and the trace.*
+- [x] **Eval:** ~60 task items, half in Hebrew: list 5, summarize 10, compare 8, extract 8, transform 8, multi-step 15, ambiguous (should clarify) 6. Metrics: router accuracy, task success (key-facts judge, 3 repeats), citation precision, valid tool-call rate, steps per task, latency per task type, injection items where a document tries to trigger a tool call. CUAD and personal lookup numbers must hold within noise. *The set exists (63 items, 31 in Hebrew, gitignored; reviewed 2026-10-14, 208 key facts). `eval tasks` (M2) reports router accuracy, task success, clarify accuracy, forbidden rate and latency per task; the valid tool-call rate was read from the step 4 traces (every call valid). Citation precision and steps per task would come with the open loop, which isn't built.*
 
 | Milestone | Done when |
 |---|---|
@@ -341,7 +341,7 @@ Cards stay, but only for the catalog, resolving documents and "which document co
 
 Latency targets: lookup ≤ 2 s (1.5 s today); list < 1 s; cached summary < 1 s; new summary first token < 10 s; compare < 15 s; open tasks < 30 s with steps shown live. *Measured 2026-10-14 after course correction step 4 (p50): lookup ~3.5 s (planner ~1.8 s; missed), list ~1.9 s (missed), summary ~6.2 s to the full answer, compare ~8-10 s, extract ~6.8 s, open ~4.5 s.*
 
-**Done when:** M0–M5 are done; the router, each task type and the open loop have measured numbers in RESULTS.md; lookup quality and latency hold.
+**Done when:** M0–M5 are done; the router, each task type and the open loop have measured numbers in RESULTS.md; lookup quality and latency hold. *Closed 2026-10-17 with a smaller scope: M0–M3 done (M3 as the calc phase), the router and every task type measured, lookup quality holds. Lookup latency doesn't (3.5 s against 2 s); M4, M5, the open loop and human-in-the-loop are under "Later".*
 
 Later (after Phase 6): a local vision model for scanned pages and figures (together with Phase 6 OCR), and long-term user memory.
 
@@ -368,12 +368,21 @@ Dependencies: `uv add --dev pytest-socket`
 - [ ] One-command launch for users (`uv tool install` or a launcher script); document the setup on Windows, macOS, and Linux.
 - [ ] Optional: a packaged Windows build attached to GitHub Releases.
 - [ ] README: demo GIF/video (30–60 s), final results table, architecture diagrams kept up to date.
-- [ ] `docs/RESULTS.md` written up as a short report: what helped, what didn't, and why.
-- [ ] CV bullets backed by the measured numbers (see below).
+- [x] `docs/RESULTS.md` written up as a short report: what helped, what didn't, and why. *Done 2026-10-17 as its "Summary" section.*
+- [x] CV bullets backed by the measured numbers (see below). *Filled in 2026-10-17.*
 
 ## Later: stretch ideas (only after Phase 7)
 
 Not scheduled. Each one must keep the offline guarantee and pass the network-blocked test.
+
+**Deferred from Phase 5.5 (2026-10-17)**, in the order they'd pay off:
+
+- [ ] **Planner latency** (first in line: the biggest product gap). The planner adds ~1.8 s to every message, so lookups take ~3.5 s against the 2 s target. Try in this order, each with `scripts/dev/plan_probe.py` and the lookup regression: `qwen3:4b` as the planner (VRAM is tight next to the 14B model, the embedder and the reranker); start lookup retrieval while the planner runs, so its time overlaps with search and rerank; skip the planner for messages that are clearly lookups (fastest, but a wrong rule silently misroutes a task).
+- [ ] **Calc phase on every answer:** catches open-08/11/12/14, which the planner routes as lookups, at an estimated 0.5–1 s per lookup. Only after the planner is faster.
+- [ ] **Open ReAct loop** (course correction step 6): only open-09 (page counts, which a metadata tool could answer without a loop) and open-10 (two facts from two places) needed one.
+- [ ] **Human-in-the-loop interrupt** (step 5): clarify as a LangGraph `interrupt()` with the SQLite checkpointer (`langgraph-checkpoint-sqlite` is already a dependency), `Engine.resume(chat_id, decision)`, confirmations for long jobs, and approval for the first write tool.
+- [ ] **M4: retrieval upgrades** (component 10) and **M5: the agent's UI** (live step list, clarify and approval cards, Summarize / Quiz me per file).
+- [ ] Small misses: list-05 (cross-lingual list match), open-01 (an overlooked grading split), notes over ~4K-token batches answering "nothing relevant", card batching still at chars/4 (`ingest/enrich.py`).
 
 - [ ] **Encrypted vault:** passphrase-protected chat history (SQLCipher). Embeddings can be partly inverted back to text, so encrypting only the text columns is not enough; for the index, document OS disk encryption (BitLocker / FileVault / LUKS) rather than rolling our own.
 - [ ] **Offline voice notes:** transcribe audio files in the vault locally (faster-whisper; model downloaded only in an explicit setup step) and index them with timestamps in place of pages.
@@ -402,3 +411,9 @@ Ruled out: **MCP** (as client or server). A client would let third-party tool se
 Fill in the numbers from `RESULTS.md`:
 
 > Built **VaultMind**, a fully offline agentic RAG desktop app (Python, LangGraph, Ollama, LanceDB). Designed a corrective retrieval loop with hybrid search and cross-encoder grading that raised recall@5 from **X% → Y%** and abstention accuracy on unanswerable questions to **Z%**, and resisted **R%** of prompt-injection attacks planted in documents, measured with a custom evaluation harness, at **N s** median latency on a consumer GPU.
+
+Filled in (2026-10-17, numbers from RESULTS.md):
+
+> Built **VaultMind**, a fully offline agentic RAG desktop app (Python, LangGraph, Ollama, LanceDB, NiceGUI). Hybrid search with cross-encoder grading raised evidence recall@5 on a CUAD legal-contract benchmark from **71% → 96%** and answer correctness from **~64% → ~80%**, with **~85%** abstention accuracy on unanswerable questions, at **1.5 s** median latency on a consumer GPU. An injection guard resisted **40 of 40** planted prompt-injection attacks (30 of 40 without it).
+
+> Turned the search pipeline into a local document agent: a planner routes each request to lookup, list, summarize, compare, extract or calculation paths that read the named documents whole or as request-focused notes. Task success on a 63-item bilingual (Hebrew/English) task set rose from **45% → 60%** (summaries 33% → 70%) while lookup quality held, measured with a custom evaluation harness and LLM key-facts judge.

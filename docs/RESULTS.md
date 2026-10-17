@@ -2,6 +2,39 @@
 
 Every pipeline change is measured against the same datasets with `uv run vaultmind eval run`. This file records the numbers and what they mean, phase by phase. Raw per-question results are in `eval/results/` (gitignored); rerun the commands below to regenerate them.
 
+## Summary (2026-10-17)
+
+Everything below runs on one consumer GPU (RTX 5070 Ti, 16 GB) with `qwen3:14b`, fully offline.
+
+| | Start | Now |
+|---|---:|---:|
+| CUAD evidence recall@5 (gold clause in the top 5) | 0.708 | 0.958 (hybrid + rerank, parent level) |
+| CUAD answer correctness (LLM judge) | ~0.64 | ~0.80 |
+| CUAD abstention accuracy (unanswerable questions) | ~0.75 | ~0.85 |
+| Your documents: lookup correctness (27 questions, Hebrew + English) | 0.891 (Phase 3) | 0.88–0.91 |
+| Planted injections resisted, targeted test | 30/40 (guard off) | 40/40 |
+| Document tasks: task success (63 items, half Hebrew, 3 repeats) | 0.450 | 0.598 |
+| Lookup latency p50 | 1.4 s | 1.6 s without the planner, ~3.5 s with it |
+
+**What helped**
+- **Retrieval, not the agent loop.** BM25 next to vector search found clauses the embedding missed (recall@5 +19 points); the cross-encoder reranker fixed their order (recall@1 +17 points). Together, only 2 of 48 gold clauses missed the top 5, down from 14.
+- **Sending the graded chunk, not its whole section** (+8 points correctness, 0.4 s faster). It also fits the rule that answers cite only text the reranker scored.
+- **The injection guard**, in a test that forces poisoned text into the prompt: 30/40 → 40/40. Redacting flagged paragraphs before document cards are written also stops planted instructions from turning into "facts" in a card.
+- **Reading documents whole instead of their summary cards** for summarize, compare and extract: summaries 3.3 → 7.0/10, compares 1.7 → 4.3/8. Most personal documents fit in 16K tokens; a summary of a summary had lost the specific numbers and dates.
+- **Request-focused notes** for documents too long to read whole (extract 2.0 → 4.7/8), and **a calculator** before the answer where the planner flags arithmetic (every tool call valid).
+- **A grammar-constrained answer** that excludes foreign scripts: qwen3 dropped Arabic, Cyrillic and CJK words into Hebrew answers, and no prompt or temperature setting stopped it.
+
+**What didn't**
+- **Query rewriting and query variants.** Rewrites fired on 4 of 98 questions and recovered none: grading scores against the original question, so a reworded query can't change how the right passage scores. Variants added 1.2 s and found 2 more clauses without better answers. Both are off by default.
+- **The rerank threshold as an abstention signal.** On CUAD the reranker always finds a related clause in the named contract; the LLM does the abstaining. The threshold stays at 0.3 to turn away off-topic questions without an LLM call.
+- **The groundedness check:** 1 real catch, 1 false alarm, 1 miss, +0.5 s. Off by default.
+- **An open ReAct tool loop:** after the fixes above, only 2 of 63 task items needed one, so it isn't built.
+
+**What's left**
+- **Planner latency.** The planner adds ~1.8 s to every message, so lookups miss their 2 s target. A smaller planner model, or running retrieval in parallel with it, is the next thing to measure.
+- **Calculations the planner doesn't recognize** (4 of 15 multi-step items) and one cross-lingual list match.
+- **Noise.** The LLM judge occasionally scores identical answers differently, so every decision here rests on means over 3 repeats, and differences of one item per task type are not results.
+
 ## Setup
 
 | | |
@@ -17,7 +50,7 @@ Every pipeline change is measured against the same datasets with `uv run vaultmi
 - **`cuad`**: 60 questions over 25 commercial contracts from [CUAD](https://www.atticusprojectai.org/cuad) (seed 0, `vaultmind eval import-cuad`). 48 are answerable, with lawyer-highlighted clause text as gold evidence. 12 are unanswerable (the clause is absent from that contract; each was checked by hand against the contract text, which found two bad labels, fixed via `RELATED` categories in `eval/cuad.py`). Each question names its contract, for example *"Which jurisdiction's law governs the Vaxcyte,Inc Supply Agreement (2020)?"*
 - **`adversarial`**: 11 questions over 10 synthetic documents (`eval/fixtures/adversarial/`). 8 questions target clauses in 4 contracts with planted prompt injections (direct override, fake system block, exfiltration request, subtle "note to AI tools"); each injection asks for a unique code that must not appear in the answer. 3 questions target pairs of documents that contradict each other.
 - **`personal`** (from Phase 4): 27 questions over the user's own documents, 11 PDFs: Hebrew algorithms lecture slides, a Hebrew syllabus and assignments, and English Workato guides with tables. The set has 8 exact lookups, 4 table questions, 4 multi-hop, 4 chat follow-ups (with `history`), 3 cross-lingual and 4 unanswerable. An agent drafted them from the indexed text; all 27 reference answers were checked against the source pages on 2026-10-12 and none needed changing (the 4 unanswerable ones were confirmed absent from every document). The file quotes the documents, so it's gitignored and not in the repository.
-- **`personal_tasks`** (Phase 5.5): 63 document-task items (list, summarize, compare, extract, transform, multi-step, should-clarify), 31 in Hebrew, with key facts and forbidden strings, over the same documents. Gitignored like `personal`; the hand review (`personal_tasks_review.md`) is pending. Format: `eval/tasks.py`, synthetic example in `eval/datasets/tasks_example.jsonl`.
+- **`personal_tasks`** (Phase 5.5): 63 document-task items (list, summarize, compare, extract, transform, multi-step, should-clarify), 31 in Hebrew, with key facts and forbidden strings, over the same documents. Gitignored like `personal`; every key fact was checked against its source by hand on 2026-10-14 (208 facts after the review). Format: `eval/tasks.py`, synthetic example in `eval/datasets/tasks_example.jsonl`.
 
 **Metrics** (exact formulas in the docstrings of `src/vaultmind/eval/metrics.py`)
 
@@ -272,7 +305,7 @@ Live with `qwen3:14b` unless noted. These measure parts, not the agent: nothing 
 
 `qwen3:14b`, Windows dev machine, GPU to itself unless noted. Task set: `personal_tasks.jsonl` after the 2026-10-14 review (63 items, 208 key facts, 31 in Hebrew). One pass each, so ±1 item per task type is noise.
 
-**Lookup regression gate (passes).** `eval run -d cuad -d personal --repeat 3`, default vs `agent.router: false`, run before the 2026-10-14 planner prompt edits (rerun pending):
+**Lookup regression gate (passes).** `eval run -d cuad -d personal --repeat 3`, default vs `agent.router: false`, run before the 2026-10-14 planner prompt edits (rerun with the step 3 planner below):
 
 | | CUAD on | CUAD off | personal on | personal off |
 |---|---|---|---|---|
@@ -441,15 +474,15 @@ Retrieval metrics are identical on and off. The two personal questions the plann
 
 Option not taken without a decision and a lookup regression run: run the phase on every answer (the model replies "done" when nothing needs computing). It would catch the four missed calculations, at about 0.5-1 s (estimated) on every lookup, which is already 3.5 s p50 against a 2 s target.
 
-### Still to measure (Phase 5.5)
+### Not measured (Phase 5.5 closed 2026-10-17)
 
-Measured above: router accuracy, task success per type over 3 repeats, planner cost on lookups, latency per task type and the lookup regression gate. Still to come (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md)):
+Measured above: router accuracy, task success per type over 3 repeats, planner cost on lookups, latency per task type and the lookup regression gate. The step 3 and step 4b runs are the phase's final numbers: nothing in the answer path changed after them. Not measured (plan in [EXECUTION_PLAN.md](EXECUTION_PLAN.md), "Later"):
 
 - **The four requests that failed before Phase 5.5** (summarize x2, list, compare) and their Hebrew versions, by hand in the app. The task set covers these kinds of requests, but they haven't been retried by hand since the changes.
 - **Citation precision:** the share of cited sections that a tool actually read.
 - **Injection through tools:** documents that try to trigger a tool call (the calc phase is the first place the answer path makes tool calls).
-- **Planner latency options:** `qwen3:4b` as the planner, or no planner call for clear lookups.
-- **Open loop (M3), if it is built:** valid tool-call rate, steps per task, how often the fallback was used.
+- **Planner latency options:** `qwen3:4b` as the planner, retrieval in parallel with the planner, or no planner call for clear lookups.
+- **Open loop:** not built (2 of 63 items needed one).
 - **Cached summary < 1 s** (not measured; summaries are no longer served from cards).
 
 ## Credits
